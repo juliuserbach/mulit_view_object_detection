@@ -38,6 +38,8 @@ sys.path.append(ROOT_DIR)  # To find local version of the library
 from mrcnn.config import Config
 from mrcnn import utils
 import mrcnn.model50 as modellib
+from mrcnn import visualize
+
 
 import tensorflow as tf
 import keras
@@ -269,9 +271,9 @@ class InteriorDataset(utils.Dataset):
         image_info = self.image_info[image_id]
         return image_info["R"]
     
-    def load_view(self, n, instance=None):
+    def load_view(self, n, instance=None, rnd_state=None):
         """ takes number of views n and outputs n image ids of a random instance"""
-        LocalProcRandGen = np.random.RandomState()
+        LocalProcRandGen = np.random.RandomState(rnd_state)
         if not instance:
             instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
             # assure that there are at least n different views of the same instance
@@ -332,39 +334,36 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         class TrainConfig(InteriorNetConfig):
-                TOP_DOWN_PYRAMID_SIZE = 40
-                FPN_CLASSIF_FC_LAYERS_SIZE = 128
-                POST_NMS_ROIS_INFERENCE = 1000
-                POST_NMS_ROIS_TRAINING = 500
-                PRE_NMS_LIMIT = 1500
-                GPU_COUNT = 1
-                IMAGES_PER_GPU = 2
-                STEPS_PER_EPOCH = 5000
-                VALIDATION_STEPS = 800
-                NUM_CLASSES = len(selected_classes)  # background + num classes
-                USE_RPN_ROIS = True
-                LEARNING_RATE = 0.001
-                GRID_REAS = 'ident'
-                BACKBONE = 'resnet50'
-                WEIGHT_DECAY = 0.0001
+            TOP_DOWN_PYRAMID_SIZE = 64
+#             FPN_CLASSIF_FC_LAYERS_SIZE = 256
+            BACKBONE = 'resnet50'    
+            STEPS_PER_EPOCH = 5000
+            VALIDATION_STEPS = 800 
+#             POST_NMS_ROIS_INFERENCE = 2000
+#             POST_NMS_ROIS_TRAINING = 1000
+#             PRE_NMS_LIMIT = 1500
+            NUM_CLASSES = len(selected_classes)  # background + num classes
+            GPU_COUNT = 1
+            IMAGES_PER_GPU = 2
+            LEARNING_RATE = 0.001
         config = TrainConfig()
     else:
         class InferenceConfig(InteriorNetConfig):
             # Set batch size to 1 since we'll be running inference on
             # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
-            TOP_DOWN_PYRAMID_SIZE = 40
-            FPN_CLASSIF_FC_LAYERS_SIZE = 128
-            POST_NMS_ROIS_INFERENCE = 1000
-            POST_NMS_ROIS_TRAINING = 500
-            PRE_NMS_LIMIT = 1500
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
             DETECTION_MIN_CONFIDENCE = 0
-            GPU_COUNT = 1
-            IMAGES_PER_GPU = 1
+            TOP_DOWN_PYRAMID_SIZE = 64
+#             FPN_CLASSIF_FC_LAYERS_SIZE = 128
+            BACKBONE = 'resnet50'    
+            STEPS_PER_EPOCH = 5000
+            VALIDATION_STEPS = 800 
+#             POST_NMS_ROIS_INFERENCE = 1000
+#             POST_NMS_ROIS_TRAINING = 500
+            BACKBONE = 'resnet50'       
             NUM_CLASSES = len(selected_classes)  # background + num classes
-            LEARNING_RATE = 0.001
-            BACKBONE = 'resnet50'
+            NUM_VIEWS = 1
             
         config = InferenceConfig()
     config.display()
@@ -403,7 +402,7 @@ if __name__ == '__main__':
 #             break
 
 #     model.load_weights(model_path, by_name=True)
-    model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1"])
+    model.load_weights(model_path, by_name=True)
 
     
         # Train or evaluate
@@ -420,9 +419,9 @@ if __name__ == '__main__':
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset_val.prepare()
         def step_decay(epoch):
-            initial_lrate = 0.005
+            initial_lrate = 0.002
             drop = 0.5
-            epochs_drop = 
+            epochs_drop = 3
             lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
             if lrate < 0.001:
                 return 0.001
@@ -459,20 +458,29 @@ if __name__ == '__main__':
       
 
     elif args.command == "evaluate":
-        dataset_val = InteriorDataset()
-        dataset_val.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
+        dataset = InteriorDataset()
+        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
-        dataset_val.prepare()
+        dataset.prepare()
         
+        instance_ids = np.copy(list(dataset.instance_map.keys()))
+        
+
         def compute_batch_ap(image_ids):
             APs = []
-            for im_num, image_id in enumerate(image_ids):
+            for instance_index, instance_id in enumerate(instance_ids):
+                #instance_id = instance_ids[instance_index]               
+                image_ids = dataset.load_view(config.NUM_VIEWS, instance=instance_id, rnd_state=1)
+                # skip instance if it has to few views (return of load_views=None)
+                if not image_ids:
+                    continue
                 # Load image
-                print("processing image {} of {}".format(im_num, image_ids.size)) 
+                
+                print("processing image {} of {}".format(instance_index, instance_ids.size)) 
                 image, image_meta, gt_class_id, gt_bbox, gt_mask =\
-                    modellib.load_image_gt(dataset_val, config,
-                                           image_id, use_mini_mask=False)
-                # Run object detection
+                    modellib.load_image_gt(dataset, config,
+                                           image_ids[0], use_mini_mask=False)
+                
                 results = model.detect([image], verbose=0)
                 # Compute AP
                 r = results[0]
@@ -483,11 +491,38 @@ if __name__ == '__main__':
             return APs
 
         # Pick a set of random images
-        APs = compute_batch_ap(dataset_val.image_ids)
+        APs = compute_batch_ap(instance_ids[:1000])
         np.save(model.log_dir, APs)
         print("mAP @ IoU=50: ", np.mean(APs))
         
         
+    elif args.command == "visualize":
+        max_views = 3
+        dataset = InteriorDataset()
+        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
+                                    NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
+        dataset.prepare()
+        instance_ids = np.copy(list(dataset.instance_map.keys()))
+        
+        SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results/NV1')
+        for instance_index, instance_id in enumerate(instance_ids):
+            #instance_id = instance_ids[instance_index]               
+            image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
+            # skip instance if it has to few views (return of load_views=None)
+            if not image_ids:
+                continue
+            # Load image
+            print("processing image {} of {}".format(instance_index, instance_ids.size)) 
+            image = dataset.load_image(image_ids[0])
+
+            results = model.detect([image], verbose=0)
+            r = results[0]
+            visualize.save_image(image_name = image_ids[0], 
+                                 image = image, boxes = r['rois'],
+                                 masks = r['masks'], class_ids = r['class_ids'], 
+                                 class_names = selected_classes, 
+                                 scores = r['scores'], save_dir = SAVE_DIR)
+
         '''
         # Validation dataset
         dataset_val = CocoDataset()

@@ -39,6 +39,8 @@ from pycocotools import mask as maskUtils
 sys.path.append(ROOT_DIR)  # To find local version of the library
 from mrcnn.config import Config
 from mrcnn import utils
+from mrcnn import visualize
+
 import mrcnn.model_h as modellib
 
 import tensorflow as tf
@@ -271,9 +273,9 @@ class InteriorDataset(utils.Dataset):
         image_info = self.image_info[image_id]
         return image_info["R"]
     
-    def load_view(self, n, instance=None):
+    def load_view(self, n, instance=None, rnd_state=None):
         """ takes number of views n and outputs n image ids of a random instance"""
-        LocalProcRandGen = np.random.RandomState()
+        LocalProcRandGen = np.random.RandomState(rnd_state)
         if not instance:
             instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
             # assure that there are at least n different views of the same instance
@@ -356,7 +358,7 @@ if __name__ == '__main__':
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
-                GRID_REAS = 'ident'
+                GRID_REAS = 'conv3d'
                 BACKBONE = 'resnet50'
                 VANILLA = False
                 WEIGHT_DECAY = 0.0001
@@ -448,11 +450,9 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-#     model.load_weights(model_path, by_name=True, exclude=["backbone", "grid_reas_depth_PG22DConv",
-#                                                           "grid_reas_depth_PG32DConv", "grid_reas_depth_PG42DConv",
-#                                                           "grid_reas_depth_PG52DConv", "grid_reas_depth_PG62DConv"])
-#     model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1"])
     model.load_weights(model_path, by_name=True, exclude=["backbone"])
+#     model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1"])
+#     model.load_weights(model_path, by_name=True, exclude=["backbone", "grid_reas_P2ident_conv", "grid_reas_P3ident_conv", "grid_reas_P4ident_conv", "grid_reas_P5ident_conv", "grid_reas_P6ident_conv"])
 
     
     # Train or evaluate
@@ -489,8 +489,8 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=20,
-                    layers='all', 
+                    epochs=10,
+                    layers='grid+', 
                    custom_callbacks = [lrate])
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -498,23 +498,23 @@ if __name__ == '__main__':
 #                 break
 
 # #         Training - Stage 2
-#         # Finetune layers from ResNet stage 4 and up
-#         print("Fine tune Resnet stage 4 and up")
-#         model.train(dataset_train, dataset_val,
-#                     learning_rate=config.LEARNING_RATE,
-#                     epochs=8,
-#                     layers='4+')
+        # Finetune layers from ResNet stage 4 and up
+        print("Fine tune Resnet stage 4 and up")
+        model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=20,
+                    layers='4+')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
 #                 layer.save_weights(os.path.join(model.log_dir, 'backbone_sep.h5'))
 #                 break
-#         # Training - Stage 3
-#         # Finetune layers from ResNet stage 4 and up
-#         print("Fine tune Resnet stage 4 and up")
-#         model.train(dataset_train, dataset_val,
-#                     learning_rate=config.LEARNING_RATE,
-#                     epochs=9,
-#                     layers='4+')
+        # Training - Stage 3
+        # Finetune layers from ResNet stage 4 and up
+        print("Fine tune Resnet stage 4 and up")
+        model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=30,
+                    layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
 #                 layer.save_weights(os.path.join(model.log_dir, 'backbone_sep.h5'))
@@ -574,7 +574,46 @@ if __name__ == '__main__':
         np.save(model.log_dir, APs)
         print("mAP @ IoU=50: ", np.mean(APs))
         
-        
+    elif args.command == "visualize":
+        max_views = 3
+        dataset = InteriorDataset()
+        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
+                                    NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
+        dataset.prepare()
+        instance_ids = np.copy(list(dataset.instance_map.keys()))
+        num_views_map = {1: 'NV1', 2: 'NV2', 3: 'NV3'}
+        SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results', num_views_map[config.NUM_VIEWS])
+        for instance_index, instance_id in enumerate(instance_ids):
+            #instance_id = instance_ids[instance_index]               
+            image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
+            # skip instance if it has to few views (return of load_views=None)
+            if not image_ids:
+                continue
+            # Load image
+
+            print("processing image {} of {}".format(instance_index, instance_ids.size)) 
+            image = dataset.load_image(image_ids[0])
+            im = []
+            Rcam = []
+            Kmat = dataset.K
+            image_ids = image_ids[:config.NUM_VIEWS]
+            for image_id in image_ids:
+                image = dataset.load_image(image_id)
+                im.append(image)
+                Rcam.append(dataset.load_R(image_id))
+
+            im = np.stack(im)
+            Rcam = np.stack([Rcam])
+            Kmat = np.stack([Kmat])
+            # Run object detection
+            results = model.detect([im], Rcam, Kmat)
+            r = results[0]
+            visualize.save_image(image_name = image_ids[0], 
+                                 image = im[0], boxes = r['rois'],
+                                 masks = r['masks'], class_ids = r['class_ids'], 
+                                 class_names = selected_classes, 
+                                 scores = r['scores'], save_dir = SAVE_DIR)
+
         '''
         # Validation dataset
         dataset_val = CocoDataset()

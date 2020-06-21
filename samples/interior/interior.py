@@ -337,18 +337,18 @@ if __name__ == '__main__':
         print("Training network heads")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=10,
+                    epochs=23,
                     layers='heads',
                     custom_callbacks = [lrate])
         print("Training resnet 4+")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=15,
+                    epochs=23,
                     layers='4+')
         print("Training all")
         model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=25,
+                    learning_rate=config.LEARNING_RATE/10,
+                    epochs=35,
                     layers='all')
 
     elif args.command == "evaluate":
@@ -356,7 +356,6 @@ if __name__ == '__main__':
         dataset_val.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset_val.prepare()
-        
         def compute_batch_ap(image_ids):
             APs = []
             for im_num, image_id in enumerate(image_ids):
@@ -379,6 +378,29 @@ if __name__ == '__main__':
         APs = compute_batch_ap(dataset_val.image_ids)
         np.save(model.log_dir, APs)
         print("mAP @ IoU=50: ", np.mean(APs))
+        
+    
+    elif args.command == "visualize":
+        dataset_val = InteriorDataset()
+        dataset_val.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
+                                    NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
+        dataset_val.prepare()
+        image_ids = dataset_val.image_ids
+        
+        obj_inst = np.asarray(self.instance_map[instance]) 
+        
+        SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/data/Results/NV1')
+        
+        for image_id in image_ids:
+            image = dataset_val.load_image(image_id)
+            results = model.detect([image], verbose=0)
+            r = results[0]
+            visualize.save_image(image_name = image_id,
+                                 image = image, boxes = r['rois'], 
+                                 masks = r['masks'], class_ids = r['class_ids'],
+                                 class_names = selected_classes, 
+                                 scores = r['scores'], save_dir = SAVE_DIR)
+
 '''
     elif args.command == "evaluate":
         # Validation dataset
