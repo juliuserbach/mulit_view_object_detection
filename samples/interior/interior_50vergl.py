@@ -340,8 +340,8 @@ if __name__ == '__main__':
             STEPS_PER_EPOCH = 5000
             VALIDATION_STEPS = 800 
 #             POST_NMS_ROIS_INFERENCE = 2000
-#             POST_NMS_ROIS_TRAINING = 1000
-#             PRE_NMS_LIMIT = 1500
+            POST_NMS_ROIS_TRAINING = 500
+            PRE_NMS_LIMIT = 1500
             NUM_CLASSES = len(selected_classes)  # background + num classes
             GPU_COUNT = 1
             IMAGES_PER_GPU = 2

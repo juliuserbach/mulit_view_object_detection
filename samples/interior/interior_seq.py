@@ -274,7 +274,13 @@ class InteriorDataset(utils.Dataset):
         return image_info["R"]
     
     def load_view(self, n, instance=None, rnd_state=None):
-        """ takes number of views n and outputs n image ids of a random instance"""
+        """ takes number of views n and outputs n image ids of a random instance
+        fix rnd_state for evaluation purposes
+        """
+        if n < 0:  
+            max_views = 5
+        else:
+            max_views = n
         LocalProcRandGen = np.random.RandomState(rnd_state)
         if not instance:
             instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
@@ -282,9 +288,10 @@ class InteriorDataset(utils.Dataset):
             while np.asarray(self.instance_map[instance]).shape[0] < n:
                 instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
         obj_inst = np.asarray(self.instance_map[instance])
-        if obj_inst.shape[0] < n:
+        num_available_views = obj_inst.shape[0]
+        if num_available_views < n:
             return None
-        views = LocalProcRandGen.choice(range(obj_inst.shape[0]),n, replace=False)
+        views = LocalProcRandGen.choice(range(obj_inst.shape[0]), min(num_available_views, max_views), replace=False)
         image_ids = obj_inst[views][:,1]
         out = []
         for image_id in image_ids:
@@ -354,11 +361,11 @@ if __name__ == '__main__':
                 vox_bs = 1
                 im_bs = 1
                 samples = 10
-                NUM_VIEWS = 2
+                NUM_VIEWS = 4
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
-                GRID_REAS = 'conv3d'
+                GRID_REAS = 'ident'
                 BACKBONE = 'resnet50'
                 VANILLA = False
                 WEIGHT_DECAY = 0.0001
@@ -382,7 +389,7 @@ if __name__ == '__main__':
             vox_bs = 1
             im_bs = 1
             samples = 10
-            NUM_VIEWS = 2
+            NUM_VIEWS = 4
             RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.001
@@ -489,7 +496,7 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=10,
+                    epochs=3,
                     layers='grid+', 
                    custom_callbacks = [lrate])
 #         for layer in model.keras_model.layers:
@@ -502,7 +509,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=20,
+                    epochs=8,
                     layers='4+')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -512,8 +519,8 @@ if __name__ == '__main__':
         # Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=30,
+                    learning_rate=config.LEARNING_RATE/10,
+                    epochs=15,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -575,13 +582,13 @@ if __name__ == '__main__':
         print("mAP @ IoU=50: ", np.mean(APs))
         
     elif args.command == "visualize":
-        max_views = 3
+        max_views = 4
         dataset = InteriorDataset()
         dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
         instance_ids = np.copy(list(dataset.instance_map.keys()))
-        num_views_map = {1: 'NV1', 2: 'NV2', 3: 'NV3'}
+        num_views_map = {1: 'NV1', 2: 'NV2', 3: 'NV3', 4: 'NV4'}
         SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results', num_views_map[config.NUM_VIEWS])
         for instance_index, instance_id in enumerate(instance_ids):
             #instance_id = instance_ids[instance_index]               
