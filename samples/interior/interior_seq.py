@@ -96,6 +96,8 @@ class InteriorDataset(utils.Dataset):
         
         with open(os.path.join(dataset_dir,'instance_mapping.json')) as json_file:
             self.instance_map = json.load(json_file)
+        with open(os.path.join(dataset_dir,'view_mapping.json')) as json_file:
+            self.view_map = json.load(json_file)
         
         #list of class names
 
@@ -278,7 +280,7 @@ class InteriorDataset(utils.Dataset):
         fix rnd_state for evaluation purposes
         """
         if n < 0:  
-            max_views = 5
+            max_views = 4
         else:
             max_views = n
         LocalProcRandGen = np.random.RandomState(rnd_state)
@@ -298,6 +300,34 @@ class InteriorDataset(utils.Dataset):
             image_id = self.image_from_source_map['interior.'+image_id]
             out.append(image_id)
         return out
+
+    
+#     def load_view(self, n, main_image=None, rnd_state=None):
+#         """ takes number of views n and outputs n image ids of a random instance
+#         fix rnd_state for evaluation purposes
+#         """
+#         if n < 0:  
+#             max_views = 4
+#         else:
+#             max_views = n
+#         LocalProcRandGen = np.random.RandomState(rnd_state)
+#         if not main_image:
+#             main_image = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
+#             print(main_image)
+#             # assure that there are at least n different views of the same instance
+#             while np.asarray(self.view_map[main_image]).shape[0] < n:
+#                 view = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
+#         secondary_views = np.asarray(self.view_map[main_image])
+#         num_available_views = secondary_views.shape[0]
+#         if num_available_views < n:
+#             return None
+#         views = LocalProcRandGen.choice(range(secondary_views.shape[0]), min(num_available_views-1, max_views-1), replace=False)
+#         image_ids = secondary_views[views]
+#         out = [self.image_from_source_map['interior.'+main_image]]
+#         for image_id in image_ids:
+#             image_id = self.image_from_source_map['interior.'+image_id]
+#             out.append(image_id)
+#         return out
 
 ############################################################
 #  Training
@@ -349,7 +379,7 @@ if __name__ == '__main__':
                 POST_NMS_ROIS_TRAINING = 500
                 PRE_NMS_LIMIT = 1500
                 GPU_COUNT = 1
-                IMAGES_PER_GPU = 1
+                IMAGES_PER_GPU = 3
                 STEPS_PER_EPOCH = 5000
                 VALIDATION_STEPS = 800
                 NUM_CLASSES = len(selected_classes)  # background + num classes
@@ -361,13 +391,13 @@ if __name__ == '__main__':
                 vox_bs = 1
                 im_bs = 1
                 samples = 10
-                NUM_VIEWS = 4
+                NUM_VIEWS = 1
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
                 GRID_REAS = 'ident'
                 BACKBONE = 'resnet50'
-                VANILLA = False
+                VANILLA = True
                 WEIGHT_DECAY = 0.0001
         config = TrainConfig()
     else:
@@ -389,7 +419,7 @@ if __name__ == '__main__':
             vox_bs = 1
             im_bs = 1
             samples = 10
-            NUM_VIEWS = 4
+            NUM_VIEWS = 2
             RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.001
@@ -470,13 +500,14 @@ if __name__ == '__main__':
         dataset_train.load_Interior(dataset_dir=args.dataset, subset='train', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset_train.prepare()
+        print(dataset_train.image_from_source_map)
         
         dataset_val = InteriorDataset()
         dataset_val.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset_val.prepare()
         def step_decay(epoch):
-            initial_lrate = 0.002
+            initial_lrate = 0.001
             drop = 0.5
             epochs_drop = 1
             lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
@@ -496,7 +527,7 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=3,
+                    epochs=2,
                     layers='grid+', 
                    custom_callbacks = [lrate])
 #         for layer in model.keras_model.layers:
@@ -505,22 +536,22 @@ if __name__ == '__main__':
 #                 break
 
 # #         Training - Stage 2
-        # Finetune layers from ResNet stage 4 and up
+#         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=8,
+                    epochs=5,
                     layers='4+')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
 #                 layer.save_weights(os.path.join(model.log_dir, 'backbone_sep.h5'))
 #                 break
         # Training - Stage 3
-        # Finetune layers from ResNet stage 4 and up
+#         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE/10,
-                    epochs=15,
+                    epochs=8,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -577,7 +608,7 @@ if __name__ == '__main__':
             return APs
 
         # Pick a set of random images
-        APs = compute_batch_ap(instance_ids[:])
+        APs = compute_batch_ap(instance_ids[:1000])
         np.save(model.log_dir, APs)
         print("mAP @ IoU=50: ", np.mean(APs))
         
