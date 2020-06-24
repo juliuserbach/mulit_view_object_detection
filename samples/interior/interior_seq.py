@@ -379,7 +379,7 @@ if __name__ == '__main__':
                 POST_NMS_ROIS_TRAINING = 500
                 PRE_NMS_LIMIT = 1500
                 GPU_COUNT = 1
-                IMAGES_PER_GPU = 3
+                IMAGES_PER_GPU = 1
                 STEPS_PER_EPOCH = 5000
                 VALIDATION_STEPS = 800
                 NUM_CLASSES = len(selected_classes)  # background + num classes
@@ -391,13 +391,13 @@ if __name__ == '__main__':
                 vox_bs = 1
                 im_bs = 1
                 samples = 10
-                NUM_VIEWS = 1
+                NUM_VIEWS = 2
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
                 GRID_REAS = 'ident'
                 BACKBONE = 'resnet50'
-                VANILLA = True
+                VANILLA = False
                 WEIGHT_DECAY = 0.0001
         config = TrainConfig()
     else:
@@ -507,7 +507,7 @@ if __name__ == '__main__':
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset_val.prepare()
         def step_decay(epoch):
-            initial_lrate = 0.001
+            initial_lrate = 0.002
             drop = 0.5
             epochs_drop = 1
             lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
@@ -527,7 +527,7 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=2,
+                    epochs=4,
                     layers='grid+', 
                    custom_callbacks = [lrate])
 #         for layer in model.keras_model.layers:
@@ -540,7 +540,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=5,
+                    epochs=8,
                     layers='4+')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -550,8 +550,8 @@ if __name__ == '__main__':
 #         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE/10,
-                    epochs=8,
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=12,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':

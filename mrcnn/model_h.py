@@ -23,7 +23,7 @@ import keras.layers as KL
 import keras.engine as KE
 import keras.models as KM
 import tensorflow.contrib.slim as slim
-# from mrcnn.recurrent import ConvRNN3D
+from mrcnn.recurrent import ConvRNN3D
 
 from keras.backend.tensorflow_backend import set_session
 config_tf = tf.ConfigProto()
@@ -553,7 +553,7 @@ class EncoderLayer(KL.Layer):
     
 class Encoder(KL.Layer):
     def __init__(self, num_layers, d_model, num_heads, dff,
-               maximum_position_encoding, rate=0.1):
+                 rate=0.1):
         super(Encoder, self).__init__()
 
         self.d_model = d_model
@@ -663,17 +663,22 @@ def unproj_feat(inputs, config):
     Rt = tf.matrix_transpose(Rcam[:, :, :, :3])
     tr = tf.expand_dims(Rcam[:, :, :, 3], axis=-1)
     # repeat Kmat 
-    _, num_views, _, _, _ = feats.get_shape().as_list()
-    Kmat = repeat_tensor(Kmat, num_views, rep_dim=1)
+    num_views = tf.shape(feats)[1]
+    Kmat = gather_repeat(Kmat, num_views, axis=1)
+
     Rcam = tf.concat([Rt, -tf.matmul(Rt, tr)], axis=3)
+    print("shape of Kmat: {}".format(Kmat.get_shape().as_list()))
     Rcam = collapse_dims(Rcam)
+    print("shape of Rcam: {}".format(Rcam.get_shape().as_list()))
     Kmat = collapse_dims(Kmat)
 
 
     KRcam = tf.linalg.matmul(Kmat, Rcam)
-
+    
     feats = collapse_dims(feats)
-    nR, fh, fw, fdim = feats.get_shape().as_list()
+    feats_shape = tf.shape(feats)
+    nR = feats_shape[0]
+    _, fh, fw, fdim = tf_static_shape(feats)
     nR = num_views * config.BATCH_SIZE
 #         fh = feats.shape[1].value
 #         fw = feats.shape[2].value
@@ -701,9 +706,9 @@ def unproj_feat(inputs, config):
                     grid_range + grid_position[:,1, tf.newaxis],
                     grid_range_z + grid_position[:,2, tf.newaxis]))# set z-offset from camera so that the grid side length equals the visible width
     rs_grid = tf.reshape(grid, [3, -1])
-    nV = rs_grid.get_shape()[1].value
+    nV = tf.shape(rs_grid)[1]
     rs_grid = tf.concat([rs_grid, tf.ones([1, nV])], axis=0)
-    print("grid shape: {}".format(grid.get_shape().as_list()))
+    print("grid shape: {}".format(rs_grid.get_shape().as_list()))
 
     # Project grid/
     im_p = tf.matmul(tf.reshape(KRcam, [-1, 4]), rs_grid) 
@@ -746,7 +751,7 @@ def unproj_feat(inputs, config):
     wc, wd = tf.reshape(wc, [-1, 1]), tf.reshape(wd, [-1, 1])
     Ibilin = tf.add_n([wa * Ia, wb * Ib, wc * Ic, wd * Id])
 
-    fdim = Ibilin.get_shape()[-1].value
+    fdim = Ibilin.get_shape().as_list()[-1]
     Ibilin = tf.reshape(Ibilin, [
         config.BATCH_SIZE, num_views, config.nvox, config.nvox, config.nvox_z,
         fdim
@@ -763,8 +768,7 @@ def proj_grid(inputs, config, proj_size):
     rsz_factor = float(proj_size) / config.IMAGE_SHAPE[0]   # image height
     Kmat = Kmat * rsz_factor
 
-    Kmat = repeat_tensor(Kmat, 1, rep_dim=1)
-    K_shape = Kmat.get_shape().as_list()
+    Kmat = tf.expand_dims(Kmat, axis=1)
    
     bs, h, w, d, ch = grid.get_shape().as_list()
 #     im_bs = Rcam.get_shape().as_list()[1]
@@ -843,21 +847,37 @@ def proj_grid(inputs, config, proj_size):
             return ray_slices
 
             
+# def repeat_tensor(T, nrep, rep_dim=1):
+#         repT = tf.expand_dims(T, rep_dim)
+#         tile_dim = [1] * len(tf_static_shape(repT))
+#         tile_dim[rep_dim] = nrep
+#         repT = tf.tile(repT, tile_dim)
+#         return repT
+
 def repeat_tensor(T, nrep, rep_dim=1):
         repT = tf.expand_dims(T, rep_dim)
-        tile_dim = [1] * len(tf_static_shape(repT))
-        tile_dim[rep_dim] = nrep
+        tile_dim = tf.Variable(tf.ones(shape=tf.rank(repT), dtype=tf.int32))
+        tile_dim = tile_dim[rep_dim].assign(nrep)
         repT = tf.tile(repT, tile_dim)
         return repT
-
+    
+def gather_repeat(values, repeats, axis=1):
+    values = tf.expand_dims(values, axis)
+    indices = tf.tile(tf.zeros(shape=1, dtype=tf.int32), repeats[None])
+    print(indices)
+    return tf.gather(values, indices, axis=axis)
     
 def collapse_dims(T):
     shape = tf_static_shape(T)
-    return tf.reshape(T, [-1] + shape[2:])
+    shape = tf.concat([tf.constant(-1)[None], shape[2:]], axis=0) 
+    return tf.reshape(T, shape)
 
 
 def tf_static_shape(T):
     return T.get_shape().as_list()
+
+def tf_dynamic_shape(T):
+    return tf.shape(T)
 
 
 def nearest3(grid, idx, clip=False):
@@ -916,7 +936,7 @@ def grid_reas(inputs, scope, config, kernel=(3, 3, 3), filters=256):
         grid_shape = tf_static_shape(x)
         x_shape = x.shape.as_list()
         # reorder dimensions from batch_size, num_views, h, w, d, chn to batch_size, h, w, d chn*num_views
-        x = KL.Lambda(lambda x: tf.reshape(x, [x_shape[0]]+x_shape[2:-1]+[x_shape[1]*x_shape[-1]]))(x)
+        x = KL.Lambda(lambda x: tf.reshape(x, [x_shape[0]]+x_shape[2:-1]+[config.NUM_VIEWS*x_shape[-1]]))(x)
         x = KL.Activation('relu')(x)
         if name_conv not in reused_lay:
             reused_lay[name_conv] = KL.Conv3D(filters=config.TOP_DOWN_PYRAMID_SIZE, kernel_size=(3,3,3), padding='same', name=name_conv)
@@ -926,8 +946,8 @@ def grid_reas(inputs, scope, config, kernel=(3, 3, 3), filters=256):
         x = KL.Activation('relu')(x)
     
     elif config.GRID_REAS == 'ident':
-        x_shape = x.shape.as_list()
-        x = KL.Lambda(lambda x: tf.reshape(x, [x_shape[0]]+x_shape[2:-1]+[x_shape[1]*x_shape[-1]]))(x)
+        x_shape = x.get_shape().as_list()
+        x = KL.Lambda(lambda x: tf.reshape(x, [x_shape[0]]+x_shape[2:-1]+[config.NUM_VIEWS*x_shape[-1]]))(x)
         x = KL.Activation('relu')(x)
         if name_conv not in reused_lay:
             reused_lay[name_conv] = KL.Conv3D(
@@ -941,6 +961,14 @@ def grid_reas(inputs, scope, config, kernel=(3, 3, 3), filters=256):
         name_conv = scope + '_convlstm3d'
         x = KL.Activation('relu')(x)
         x = convlstm(x, name=name_conv, kernel=[3, 3, 3], filters=config.TOP_DOWN_PYRAMID_SIZE)
+        x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
+        x = KL.Activation('relu')(x)
+        
+    elif config.GRID_REAS == 'cudnnlstm':
+        name_conv = scope + '_convlstm3d'
+        x = KL.Activation('relu')(x)
+        
+        x = KL.CuDNNLSTM(units=config.TOP_DOWN_PYRAMID_SIZE)
         x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
         x = KL.Activation('relu')(x)
         
@@ -1013,14 +1041,15 @@ def add_conv_layer(input, scope, filters, kernel_size, strides=(1, 1), name='con
 #     if name not in reused_lay:
 #         reused_lay[name] = KL.Conv2D(filters, kernel_size, strides=strides, name=name, use_bias=use_bias, padding=padding)
 #     x = reused_lay[name](input)
-    x = KL.Conv2D(filters, kernel_size, strides=strides, name=name, use_bias=use_bias, padding=padding)(input)
+    x = KL.TimeDistributed(KL.Conv2D(filters, kernel_size, strides=strides, use_bias=use_bias, padding=padding), name=name)(input)
     return x
 
 def add_bn_layer(name):
 #     if name not in reused_lay:
 #         reused_lay[name] = BatchNorm(name=name)
 #     return reused_lay[name]
-    return BatchNorm(name=name)
+    return KL.TimeDistributed(BatchNorm(), name=name)
+
 def identity_block(input_tensor, kernel_size, filters, stage, block,
                    use_bias=True, train_bn=True):
     """The identity_block is the block that has no conv layer at shortcut
@@ -1146,11 +1175,11 @@ def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
     """
     assert architecture in ["resnet50", "resnet101"]
     # Stage 1
-    x = KL.ZeroPadding2D((3, 3))(input_image)
-    x = KL.Conv2D(64, (7, 7), strides=(2, 2), name='conv1', use_bias=True)(x)
-    x = BatchNorm(name='bn_conv1')(x, training=train_bn)
+    x = KL.TimeDistributed(KL.ZeroPadding2D((3, 3)))(input_image)
+    x = KL.TimeDistributed(KL.Conv2D(64, (7, 7), strides=(2, 2), use_bias=True), name='conv1')(x)
+    x = KL.TimeDistributed(BatchNorm(), name='bn_conv1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
-    C1 = x = KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same")(x)
+    C1 = x = KL.TimeDistributed(KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same"))(x)
     # Stage 2
     x = conv_block(x, 3, [32, 32, 128], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
     x = identity_block(x, 3, [32, 32, 128], stage=2, block='b', train_bn=train_bn)
@@ -1226,13 +1255,13 @@ def build_resnet_fpn(input_image, config):
     # TODO: add assert to varify feature map sizes match what's in config
     P5 = add_conv_layer(C5, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')
     P4 = KL.Add()([
-        KL.UpSampling2D(size=(2, 2))(P5),
+        KL.TimeDistributed(KL.UpSampling2D(size=(2, 2)))(P5),
         add_conv_layer(C4, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')])
     P3 = KL.Add()([
-        KL.UpSampling2D(size=(2, 2))(P4),
+        KL.TimeDistributed(KL.UpSampling2D(size=(2, 2)))(P4),
         add_conv_layer(C3, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')])
     P2 = KL.Add()([
-        KL.UpSampling2D(size=(2, 2))(P3),
+        KL.TimeDistributed(KL.UpSampling2D(size=(2, 2)))(P3),
         add_conv_layer(C2, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')])
     # Attach 3x3 conv to all P layers to get the final feature maps.
     P2 = add_conv_layer(P2, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p2")
@@ -1241,7 +1270,7 @@ def build_resnet_fpn(input_image, config):
     P5 = add_conv_layer(P5, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p5")
     # P6 is used for the 5th anchor scale in RPN. Generated by
     # subsampling from P5 with stride of 2.
-    P6 = KL.MaxPool2D(pool_size=(1, 1), strides=2)(P5)
+    P6 = KL.TimeDistributed(KL.MaxPool2D(pool_size=(1, 1), strides=2))(P5)
 
     print("shape_out: {}".format(P2.get_shape().as_list()))
     print("shape_out: {}".format(P3.get_shape().as_list()))
@@ -1324,6 +1353,7 @@ def view_merger_model(input_shape, config):
     print("finished whole bb model")
     return merged_bb
 """
+
 def view_merger_model(input_shape, config):
     print("shape of input: {}".format(input_shape))
     input_images = KL.Input(shape=input_shape)
@@ -2810,6 +2840,9 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     b = 0  # batch item index
     
     instance_index = -1
+    image_index = -1
+#     instance_ids = np.copy(list(dataset.instance_map.keys()))
+#     view_ids = np.copy(list(dataset.view_map.keys()))
     instance_ids = np.copy(list(dataset.instance_map.keys()))
     error_count = 0
     if not config.USE_RPN_ROIS:
@@ -2830,11 +2863,14 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
         try:
             # Increment index to pick next image. Shuffle if at the start of an epoch.
             instance_index = (instance_index + 1) % len(instance_ids)
+#             image_index = (image_index + 1) % len(view_ids)
             if shuffle and instance_index == 0:
                 np.random.shuffle(instance_ids)
 
             # Get GT bounding boxes and masks for image.
+#             view_id = view_ids[image_index]
             instance_id = instance_ids[instance_index]
+#             image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id)
             image_ids = dataset.load_view(config.NUM_VIEWS, instance=instance_id)
             # skip instance if it has to few views (return of load_views=None)
             if not image_ids:
@@ -3072,30 +3108,33 @@ class MaskRCNN():
             input_anchors = KL.Input(shape=[None, 4], name="input_anchors")
         batch_size, num_views, h, w, chn = input_image.get_shape().as_list()
         num_views = config.NUM_VIEWS
+                           
+#         P2, P3, P4, P5, P6 = build_resnet_fpn(input_image, config)                   
+        
         input_image_0 = KL.Lambda(lambda x: x[:,0,:,:,:], name="pred_image_selection")(input_image)
 
-        backbone_model = view_merger_model(input_image_0.get_shape().as_list()[1:], config)
+        backbone_model = view_merger_model(input_image.get_shape().as_list()[1:], config)
         
-        P2, P3, P4, P5, P6 = backbone_model(KL.Lambda(lambda x: x[:,0,:,:,:])(input_image))
-        P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)
-        P3 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3)
-        P4 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4)
-        P5 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5)
-        P6 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6)
-        for i in range(1, num_views):
-            P2_t, P3_t, P4_t, P5_t, P6_t = backbone_model(KL.Lambda(lambda x: x[:,i,:,:,:])(input_image))
-            print("finished")
-            P2_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2_t)
-            P3_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3_t)
-            P4_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4_t)
-            P5_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5_t)
-            P6_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6_t)
-            print("P2_t: {}".format(P2_t.get_shape().as_list()))
-            P2 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P2, P2_t])
-            P3 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P3, P3_t])
-            P4 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P4, P4_t])
-            P5 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P5, P5_t])
-            P6 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P6, P6_t])
+        P2, P3, P4, P5, P6 = backbone_model(input_image)
+#         P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)
+#         P3 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3)
+#         P4 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4)
+#         P5 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5)
+#         P6 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6)
+#         for i in range(1, num_views):
+#             P2_t, P3_t, P4_t, P5_t, P6_t = backbone_model(KL.Lambda(lambda x: x[:,i,:,:,:])(input_image))
+#             print("finished")
+#             P2_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2_t)
+#             P3_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3_t)
+#             P4_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4_t)
+#             P5_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5_t)
+#             P6_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6_t)
+#             print("P2_t: {}".format(P2_t.get_shape().as_list()))
+#             P2 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P2, P2_t])
+#             P3 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P3, P3_t])
+#             P4 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P4, P4_t])
+#             P5 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P5, P5_t])
+#             P6 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P6, P6_t])
         
         
         
@@ -3148,7 +3187,7 @@ class MaskRCNN():
         PG6 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG6)
         print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
         
-        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
+#         PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
         PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
         PG3 = depth_sampling(PG3, config, name='grid_reas_depth_PG3')
         PG4 = depth_sampling(PG4, config, name='grid_reas_depth_PG4')
