@@ -274,8 +274,7 @@ class InteriorDataset(utils.Dataset):
         """
         image_info = self.image_info[image_id]
         return image_info["R"]
-
-
+    
     def load_view(self, n, instance=None, rnd_state=None):
         """ takes number of views n and outputs n image ids of a random instance
         fix rnd_state for evaluation purposes
@@ -295,7 +294,7 @@ class InteriorDataset(utils.Dataset):
         if num_available_views < n:
             return None
         views = LocalProcRandGen.choice(range(obj_inst.shape[0]), min(num_available_views, max_views), replace=False)
-        image_ids = obj_inst[views][:, 1]
+        image_ids = obj_inst[views][:,1]
         out = []
         for image_id in image_ids:
             image_id = self.image_from_source_map['interior.'+image_id]
@@ -388,8 +387,6 @@ if __name__ == '__main__':
                 vmax = 1.07
                 nvox = 40
                 nvox_z = 40
-                min_z = 1.
-                max_z = 5.
                 vsize = float(vmax - vmin) / nvox
                 vox_bs = 1
                 im_bs = 1
@@ -422,13 +419,13 @@ if __name__ == '__main__':
             vox_bs = 1
             im_bs = 1
             samples = 10
-            NUM_VIEWS = 1
+            NUM_VIEWS = 2
             RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.001
             GRID_REAS = 'ident'
             BACKBONE = 'resnet50'
-            VANILLA = True
+            VANILLA = False
             
         config = InferenceConfig()
     config.display()
@@ -562,7 +559,6 @@ if __name__ == '__main__':
 #                 break
 
     elif args.command == "evaluate":
-        max_views = 4
         dataset = InteriorDataset()
         dataset.load_Interior(dataset_dir=args.dataset, subset='train', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
@@ -571,10 +567,11 @@ if __name__ == '__main__':
         instance_ids = np.copy(list(dataset.instance_map.keys()))
         
         def compute_batch_ap(instance_ids):
+            max_views = 4
             APs = []
             for instance_index, instance_id in enumerate(instance_ids):
                 #instance_id = instance_ids[instance_index]               
-                image_ids = dataset.load_view(max_views, instance=instance_id)
+                image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
                 # skip instance if it has to few views (return of load_views=None)
                 if not image_ids:
                     continue
@@ -610,7 +607,6 @@ if __name__ == '__main__':
                     utils.compute_ap(gt_bbox, gt_class_id, gt_mask,
                                       r['rois'], r['class_ids'], r['scores'], r['masks'])
                 APs.append(AP)
-                print("meanAP: {}".format(np.mean(APs)))
             return APs
 
         # Pick a set of random images

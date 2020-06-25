@@ -3132,6 +3132,9 @@ class MaskRCNN():
         print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
         PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
+        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+
+        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
         PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
         PG3 = depth_sampling(PG3, config, name='grid_reas_depth_PG3')
         PG4 = depth_sampling(PG4, config, name='grid_reas_depth_PG4')
