@@ -697,6 +697,7 @@ def unproj_feat(inputs, config):
     grid_range_z = tf.tile(grid_range_z, [config.BATCH_SIZE, 1])
     # calculate position of grid in world coordinate frame
     grid_dist = 600/320 * config.vmax
+    grid_dist = 2.5
     grid_position = K.dot(tf.reshape(Rcam_old[:,0,:,:], [-1, 3, 4]), tf.constant([0.0, 0.0, grid_dist, 1.0], shape=[4,1]) )
     grid_position = tf.reshape(grid_position, [config.BATCH_SIZE, 3])
     print("grid position shape: {}".format(grid_position.get_shape().as_list()))
@@ -796,6 +797,7 @@ def proj_grid(inputs, config, proj_size):
             
             # Define z values of samples along ray
             grid_dist = 600/320 * config.vmax 
+            grid_dist = 2.5
             z_samples = tf.linspace(grid_dist - config.vmax*0.5, grid_dist + config.vmax*0.5, config.samples)
 
             # Transform Xc to Xw using transpose of rotation matrix
@@ -3187,7 +3189,7 @@ class MaskRCNN():
         PG6 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG6)
         print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
         
-#         PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
+        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
         PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
         PG3 = depth_sampling(PG3, config, name='grid_reas_depth_PG3')
         PG4 = depth_sampling(PG4, config, name='grid_reas_depth_PG4')

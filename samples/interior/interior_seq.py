@@ -315,6 +315,7 @@ class InteriorDataset(utils.Dataset):
 #             main_image = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
 #             print(main_image)
 #             # assure that there are at least n different views of the same instance
+#             print(np.asarray(self.view_map[main_image]).shape[0])
 #             while np.asarray(self.view_map[main_image]).shape[0] < n:
 #                 view = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
 #         secondary_views = np.asarray(self.view_map[main_image])
@@ -383,8 +384,8 @@ if __name__ == '__main__':
                 STEPS_PER_EPOCH = 5000
                 VALIDATION_STEPS = 800
                 NUM_CLASSES = len(selected_classes)  # background + num classes
-                vmin = -1.07
-                vmax = 1.07
+                vmin = -5.
+                vmax = 5.
                 nvox = 40
                 nvox_z = 40
                 vsize = float(vmax - vmin) / nvox
@@ -411,21 +412,21 @@ if __name__ == '__main__':
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
             NUM_CLASSES = len(selected_classes)  # background + num classes
-            vmin = -1.07
-            vmax = 1.07
-            nvox = 40
-            nvox_z = 40
+            vmin = -5.
+            vmax = 5.
+            nvox = 50
+            nvox_z = 50
             vsize = float(vmax - vmin) / nvox
             vox_bs = 1
             im_bs = 1
             samples = 10
-            NUM_VIEWS = 2
+            NUM_VIEWS = 1
             RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.001
             GRID_REAS = 'ident'
             BACKBONE = 'resnet50'
-            VANILLA = False
+            VANILLA = True
             
         config = InferenceConfig()
     config.display()
@@ -567,13 +568,15 @@ if __name__ == '__main__':
         instance_ids = np.copy(list(dataset.instance_map.keys()))
         
         def compute_batch_ap(instance_ids):
+            max_views = 4
             APs = []
             for instance_index, instance_id in enumerate(instance_ids):
                 #instance_id = instance_ids[instance_index]               
-                image_ids = dataset.load_view(config.NUM_VIEWS, instance=instance_id)
+                image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
                 # skip instance if it has to few views (return of load_views=None)
                 if not image_ids:
                     continue
+                image_ids = image_ids[config.NUM_VIEWS]
                 #image_pair = image_ids.reshape([-1,config.NUM_VIEWS])
                 # Load image
                 print("processing image {} of {}".format(instance_index, instance_ids.size)) 
@@ -605,10 +608,11 @@ if __name__ == '__main__':
                     utils.compute_ap(gt_bbox, gt_class_id, gt_mask,
                                       r['rois'], r['class_ids'], r['scores'], r['masks'])
                 APs.append(AP)
+                print("meanAP: {}".format(np.mean(APs)))
             return APs
 
         # Pick a set of random images
-        APs = compute_batch_ap(instance_ids[:1000])
+        APs = compute_batch_ap(instance_ids[:])
         np.save(model.log_dir, APs)
         print("mAP @ IoU=50: ", np.mean(APs))
         
