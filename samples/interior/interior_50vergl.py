@@ -458,6 +458,7 @@ if __name__ == '__main__':
       
 
     elif args.command == "evaluate":
+        max_views = 4
         dataset = InteriorDataset()
         dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
@@ -470,7 +471,7 @@ if __name__ == '__main__':
             APs = []
             for instance_index, instance_id in enumerate(instance_ids):
                 #instance_id = instance_ids[instance_index]               
-                image_ids = dataset.load_view(config.NUM_VIEWS, instance=instance_id, rnd_state=1)
+                image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
                 # skip instance if it has to few views (return of load_views=None)
                 if not image_ids:
                     continue
@@ -488,6 +489,7 @@ if __name__ == '__main__':
                     utils.compute_ap(gt_bbox, gt_class_id, gt_mask,
                                       r['rois'], r['class_ids'], r['scores'], r['masks'])
                 APs.append(AP)
+                print("meanAP: {}".format(np.mean(APs)))
             return APs
 
         # Pick a set of random images

@@ -22,6 +22,16 @@ import keras.backend as K
 import keras.layers as KL
 import keras.engine as KE
 import keras.models as KM
+import tensorflow.contrib.slim as slim
+# from mrcnn.recurrent import ConvRNN3D
+
+from keras.backend.tensorflow_backend import set_session
+config_tf = tf.ConfigProto()
+config_tf.gpu_options.allow_growth = True  # dynamically grow the memory used on the GPU
+config_tf.log_device_placement = True  # to log device placement (on which device the operation ran)
+                                    # (nothing gets printed in Jupyter, only if you run it standalone)
+sess = tf.Session(config=config_tf)
+set_session(sess) 
 
 from mrcnn import utils
 
@@ -30,6 +40,7 @@ from distutils.version import LooseVersion
 assert LooseVersion(tf.__version__) >= LooseVersion("1.3")
 assert LooseVersion(keras.__version__) >= LooseVersion('2.0.8')
 
+reused_lay = {}
 
 ############################################################
 #  Utility Functions
@@ -84,14 +95,956 @@ def compute_backbone_shapes(config, image_shape):
             int(math.ceil(image_shape[1] / stride))]
             for stride in config.BACKBONE_STRIDES])
 
+############################################################
+#  ConvLSTM
+############################################################
 
+
+
+
+# class ConvLSTMCell(tf.contrib.rnn.RNNCell):
+#     """A LSTM cell with convolutions instead of multiplications.
+#     Reference:
+#       Xingjian, S. H. I., et al. "Convolutional LSTM network: 
+#       A machine learning approach for precipitation nowcasting.
+#       " Advances in Neural Information Processing Systems. 2015.
+#     """
+
+#     def __init__(self,
+#                  shape,
+#                  input_dim,
+#                  filters,
+#                  kernel,
+#                  initializer=None,
+#                  forget_bias=1.0,
+#                  activation=tf.tanh,
+#                  normalize=True, data_format='channels_last'):
+#         self.data_format = data_format
+#         self._kernel = kernel
+#         self._filters = filters
+#         self.filters = filters
+#         self._initializer = initializer
+#         self._forget_bias = forget_bias
+#         self._activation = activation
+#         self._size = tf.TensorShape(shape + [self._filters])
+#         self._normalize = normalize
+#         self._feature_axis = self._size.ndims
+#         if data_format=='channels_first':
+#             channel_axis = 1
+#         else:
+#             channel_axis = -1
+#         input_dim = shape[channel_axis]
+#         kernel_shape = self._kernel + [input_dim, self.filters * 4]
+#         self.kernel_shape = kernel_shape
+
+#     @property
+#     def state_size(self):
+#         return tf.contrib.rnn.LSTMStateTuple(self._size, self._size)
+
+#     @property
+#     def output_size(self):
+#         return self._size
+
+#     def __call__(self, x, h, **kwargs):
+#         scope = None
+#         with tf.variable_scope(scope or self.__class__.__name__):
+#             previous_memory, previous_output = h
+
+#             channels = x.shape[-1].value
+#             filters = self._filters
+#             gates = 4 * filters if filters > 1 else 4
+#             x = tf.concat([x, previous_output], axis=self._feature_axis)
+#             n = channels + filters
+#             m = gates
+#             W = tf.get_variable(
+#                 'kernel', self._kernel + [n, m], initializer=self._initializer)
+#             y = tf.nn.convolution(x, W, 'SAME')
+#             if not self._normalize:
+#                 y += tf.get_variable(
+#                     'bias', [m], initializer=tf.constant_initializer(0.0))
+#             input_contribution, input_gate, forget_gate, output_gate = tf.split(
+#                 y, 4, axis=self._feature_axis)
+
+#             if self._normalize:
+#                 input_contribution = tf.contrib.layers.layer_norm(
+#                     input_contribution)
+#                 input_gate = tf.contrib.layers.layer_norm(input_gate)
+#                 forget_gate = tf.contrib.layers.layer_norm(forget_gate)
+#                 output_gate = tf.contrib.layers.layer_norm(output_gate)
+
+#             memory = (
+#                 previous_memory * tf.sigmoid(forget_gate + self._forget_bias) +
+#                 tf.sigmoid(input_gate) * self._activation(input_contribution))
+
+#             if self._normalize:
+#                 memory = tf.contrib.layers.layer_norm(memory)
+
+#             output = self._activation(memory) * tf.sigmoid(output_gate)
+
+#             return output, tf.contrib.rnn.LSTMStateTuple(memory, output)
+
+class ConvLSTMCell(KL.Layer):
+    
+    
+    def __init__(self, shape, kernel, filters, 
+                 initializer=slim.initializers.xavier_initializer(),
+                 data_format='channels_last', activation=tf.tanh,
+                 normalize=False, forget_bias = 1., **kwargs):
+        self._normalize = normalize
+        self.kernel = kernel
+        self.kernel_size = kernel
+        self.filters = filters 
+        self._initializer = initializer
+        self._activation = activation
+        self._forget_bias = forget_bias
+        self._size = tf.TensorShape(shape + [self.filters])
+        self._feature_axis = self._size.ndims
+        self.data_format = data_format
+        if self._normalize:
+            self.layer_norm_input_contribution = KL.LayerNormalization()
+            self.layer_norm_input_gate = KL.LayerNormalization()
+            self.layer_norm_output_gate = KL.LayerNormalization()
+            self.layer_norm_forget_gate = KL.LayerNormalization()
+            self.layer_norm_memory = KL.LayerNormalization()
+        super(ConvLSTMCell, self).__init__(**kwargs)
+    
+    
+    @property
+    def state_size(self):
+        return tf.contrib.rnn.LSTMStateTuple(self._size, self._size)
+
+    
+    @property
+    def output_size(self):
+        return self._size
+        
+        
+    def build(self, input_shape):
+        print("input shape in build:  {}".format(input_shape))
+        bs, h, w, d, ch = input_shape
+        self.input_dim = ch
+        filters = self.filters
+        gates = 4 * filters if filters > 1 else 4
+        n = ch + filters
+        m = gates
+        
+        self.W = self.add_weight(name='weights_lstm3d',
+                                 shape=self.kernel + [n, m], 
+                                 initializer=self._initializer
+                                 , trainable=True)
+
+        self.bias = self.add_weight(name='bias_lstm3d',
+                                    shape=[m], 
+                                    initializer=tf.constant_initializer(0.0), 
+                                    trainable=True)
+
+        if self.data_format=='channels_first':
+            channel_axis = 1
+        else:
+            channel_axis = -1
+        input_dim = input_shape[channel_axis]
+        kernel_shape = self.kernel + [input_dim, self.filters * 4]
+        self.kernel_shape = kernel_shape
+        
+        
+    def call(self, x, h, **kwargs):
+        
+        scope = None
+        with tf.variable_scope(scope or self.__class__.__name__):
+            previous_memory, previous_output = h
+            
+            print("shape of x: {}".format(x.get_shape().as_list()))
+            
+            channels = x.shape[-1].value
+            filters = self.filters
+            gates = 4 * filters if filters > 1 else 4
+            x = tf.concat([x, previous_output], axis=self._feature_axis)
+            n = channels + filters
+            m = gates
+            
+            y = tf.nn.convolution(x, self.W, 'SAME')
+            if not self._normalize:
+                y += self.bias
+            input_contribution, input_gate, forget_gate, output_gate = tf.split(
+                y, 4, axis=self._feature_axis)
+
+            if self._normalize:
+                input_contribution = self.layer_norm_input_contribution(
+                    input_contribution)
+                input_gate = self.layer_norm_input_gate(input_gate)
+                forget_gate = self.layer_norm_forget_gate(forget_gate)
+                output_gate = self.layer_norm_output_gate(output_gate)
+
+            memory = (
+                previous_memory * tf.sigmoid(forget_gate + self._forget_bias) +
+                tf.sigmoid(input_gate) * self._activation(input_contribution))
+
+            if self._normalize:
+                memory = self.layer_norm_memory(memory)
+
+            output = self._activation(memory) * tf.sigmoid(output_gate)
+
+            return output, tf.contrib.rnn.LSTMStateTuple(memory, output)
+
+    
+class ConvGRUCell(tf.contrib.rnn.RNNCell):
+    """A GRU cell with convolutions instead of multiplications."""
+
+    def __init__(self,
+                 shape,
+                 filters,
+                 kernel,
+                 initializer=None,
+                 activation=tf.tanh,
+                 normalize=True):
+        self._filters = filters
+        self._kernel = kernel
+        self._initializer = initializer
+        self._activation = activation
+        self._size = tf.TensorShape(shape + [self._filters])
+        self._normalize = normalize
+        self._feature_axis = self._size.ndims
+
+    @property
+    def state_size(self):
+        return self._size
+
+    @property
+    def output_size(self):
+        return self._size
+
+    def __call__(self, x, h, scope=None):
+        with tf.variable_scope(scope or self.__class__.__name__):
+
+            with tf.variable_scope('Gates'):
+                channels = x.shape[-1].value
+                inputs = tf.concat([x, h], axis=self._feature_axis)
+                n = channels + self._filters
+                m = 2 * self._filters if self._filters > 1 else 2
+                W = tf.get_variable(
+                    'kernel',
+                    self._kernel + [n, m],
+                    initializer=self._initializer)
+                y = tf.nn.convolution(inputs, W, 'SAME')
+                if self._normalize:
+                    reset_gate, update_gate = tf.split(
+                        y, 2, axis=self._feature_axis)
+                    reset_gate = tf.contrib.layers.layer_norm(reset_gate)
+                    update_gate = tf.contrib.layers.layer_norm(update_gate)
+                else:
+                    y += tf.get_variable(
+                        'bias', [m], initializer=tf.constant_initializer(1.0))
+                    reset_gate, update_gate = tf.split(
+                        y, 2, axis=self._feature_axis)
+                reset_gate, update_gate = tf.sigmoid(reset_gate), tf.sigmoid(
+                    update_gate)
+
+            with tf.variable_scope('Output'):
+                inputs = tf.concat(
+                    [x, reset_gate * h], axis=self._feature_axis)
+                n = channels + self._filters
+                m = self._filters
+                W = tf.get_variable(
+                    'kernel',
+                    self._kernel + [n, m],
+                    initializer=self._initializer)
+                y = tf.nn.convolution(inputs, W, 'SAME')
+                if self._normalize:
+                    y = tf.contrib.layers.layer_norm(y)
+                else:
+                    y += tf.get_variable(
+                        'bias', [m], initializer=tf.constant_initializer(0.0))
+                y = self._activation(y)
+                output = update_gate * h + (1 - update_gate) * y
+
+            return output, output
+        
+def convgru(grid, kernel=[3, 3, 3], filters=32):
+    bs, im_bs, h, w, d, ch = grid.get_shape().as_list()
+    
+    
+    conv_gru = ConvGRUCell(
+        shape=[h, w, d],
+        initializer=slim.initializers.xavier_initializer(),
+        kernel=kernel,
+        filters=filters)
+    seq_length = [im_bs for _ in range(bs)]
+    outputs, states = tf.nn.dynamic_rnn(
+        conv_gru,
+        grid,
+        parallel_iterations=64,
+        sequence_length=seq_length,
+        dtype=tf.float32,
+        time_major=False)
+    return outputs, states
+
+
+def convlstm(grid, name, kernel=(3, 3, 3), filters=32):
+    bs, im_bs, h, w, d, ch = grid.get_shape().as_list()
+    
+    if name not in reused_lay:
+        reused_lay[name] = ConvLSTMCell(
+            shape=[h, w, d], 
+            initializer=slim.initializers.xavier_initializer(),
+            kernel=kernel,
+            filters=filters)
+        
+    print(grid.get_shape().as_list())
+    print("h, w, d: {}, {}, {}".format(h, w, d))
+    outputs = ConvRNN3D(reused_lay[name], stateful=False, return_state=False, input_shape=grid.get_shape().as_list(), name=name)(grid)
+    print(outputs.shape)
+#     outputs, states = tf.nn.dynamic_rnn(
+#         conv_lstm,
+#         grid,
+#         parallel_iterations=64,
+#         sequence_length=seq_length,
+#         dtype=tf.float32,
+#         time_major=False)
+    return outputs
+
+############################################################
+#  Attention Layers
+############################################################
+def get_angles(pos, i, num_pos_feats):
+    angle_rates = 1 / tf.math.pow(10000, (2 * (i//2)) / tf.float32(num_pos_feats))
+    return pos * angle_rates
+
+
+def positional_encoding(positions, d_model):
+    """computes the positional encoding for all axes
+    positions: batch_size, im_bs, depth_samples, 3(x,y,z), npix
+    pos_encoding: batch_size, npix*depth_samples flattened in order x, y, z, d_model
+    """
+
+    assert d_model % 3 == 0, "The depth of the model must be divisible by 3."
+    num_pos_feats = d_model // 3
+
+    # reshape positions to batch_size, 3(x,y,z), N*im_bs
+    positions = tf.transpose(positions, [0, 3, 1, 2, 4])
+    positions = tf.reshape(positions, [tf.shape(positions)[:-3], -1])
+    x_embed, y_embed, z_embed = tf.meshgrid(positions[:, 0, :],
+                                            positions[:, 1, :],
+                                            positions[:, 2, :])
+    angle_rads_x = get_angles(x_embed[..., tf.newaxis],
+                              tf.arange(num_pos_feats)[tf.newaxis, ...],
+                              num_pos_feats)
+    angle_rads_y = get_angles(y_embed[..., tf.newaxis],
+                              tf.arange(num_pos_feats)[tf.newaxis, ...],
+                              num_pos_feats)
+    angle_rads_z = get_angles(z_embed[..., tf.newaxis],
+                              tf.arange(num_pos_feats)[tf.newaxis, ...],
+                              num_pos_feats)
+  
+    # apply sin to even indices in the array; 2i
+    angle_rads_x[..., 0::2] = tf.math.sin(angle_rads_x[..., 0::2])
+    angle_rads_y[..., 0::2] = tf.math.sin(angle_rads_y[..., 0::2])
+    angle_rads_z[..., 0::2] = tf.math.sin(angle_rads_z[..., 0::2])
+
+    # apply cos to odd indices in the array; 2i+1
+    angle_rads_x[..., 1::2] = tf.math.cos(angle_rads_x[..., 1::2])
+    angle_rads_y[..., 1::2] = tf.math.cos(angle_rads_y[..., 1::2])
+    angle_rads_z[..., 1::2] = tf.math.cos(angle_rads_z[..., 1::2])
+
+    pos_encoding = tf.concat([angle_rads_x, angle_rads_y, angle_rads_z], axis=4)
+    # flatten into 1D
+    pos_encoding = tf.transpose(pos_encoding, [0, 4, 1, 2, 3])
+    pos_encoding = tf.reshape(pos_encoding, [tf.shape(pos_encoding)[0:2], -1])
+    pos_encoding = tf.transpose(pos_encoding, [0, 2, 1])
+    return pos_encoding
+
+
+def create_padding_mask(seq):
+    seq = tf.cast(tf.math.equal(seq, 0), tf.float32)
+
+    # add extra dimensions to add the padding
+    # to the attention logits.
+    return seq[:, tf.newaxis, tf.newaxis, :]  # (batch_size, 1, 1, seq_len)
+
+def scaled_dot_product_attention(q, k, v, mask):
+    """Calculate the attention weights.
+    q, k, v must have matching leading dimensions.
+    k, v must have matching penultimate dimension, i.e.: seq_len_k = seq_len_v.
+    The mask has different shapes depending on its type(padding or look ahead) 
+    but it must be broadcastable for addition.
+
+    Args:
+    q: query shape == (..., seq_len_q, depth)
+    k: key shape == (..., seq_len_k, depth)
+    v: value shape == (..., seq_len_v, depth_v)
+    mask: Float tensor with shape broadcastable 
+          to (..., seq_len_q, seq_len_k). Defaults to None.
+
+    Returns:
+    output, attention_weights
+    """
+
+    matmul_qk = tf.matmul(q, k, transpose_b=True)  # (..., seq_len_q, seq_len_k)
+
+    # scale matmul_qk
+    dk = tf.cast(tf.shape(k)[-1], tf.float32)
+    scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
+
+    # add the mask to the scaled tensor.
+    if mask is not None:
+        scaled_attention_logits += (mask * -1e9)  
+
+    # softmax is normalized on the last axis (seq_len_k) so that the scores
+    # add up to 1.
+    attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)  # (..., seq_len_q, seq_len_k)
+
+    output = tf.matmul(attention_weights, v)  # (..., seq_len_q, depth_v)
+
+    return output, attention_weights
+
+
+class MultiHeadAttention(KL.Layer):
+    def __init__(self, d_model, num_heads):
+        super(MultiHeadAttention, self).__init__()
+        self.num_heads = num_heads
+        self.d_model = d_model
+
+        assert d_model % self.num_heads == 0
+
+        self.depth = d_model // self.num_heads
+
+        self.wq = KL.Dense(d_model)
+        self.wk = KL.Dense(d_model)
+        self.wv = KL.Dense(d_model)
+
+        self.dense = KL.Dense(d_model)
+
+    def split_heads(self, x, batch_size):
+        """Split the last dimension into (num_heads, depth).
+        Transpose the result such that the shape is (batch_size, num_heads, seq_len, depth)
+        """
+        x = tf.reshape(x, (batch_size, -1, self.num_heads, self.depth))
+        return tf.transpose(x, perm=[0, 2, 1, 3])
+
+    def call(self, v, k, q, mask):
+        batch_size = tf.shape(q)[0]
+
+        q = self.wq(q)  # (batch_size, seq_len, d_model)
+        k = self.wk(k)  # (batch_size, seq_len, d_model)
+        v = self.wv(v)  # (batch_size, seq_len, d_model)
+
+        q = self.split_heads(q, batch_size)  # (batch_size, num_heads, seq_len_q, depth)
+        k = self.split_heads(k, batch_size)  # (batch_size, num_heads, seq_len_k, depth)
+        v = self.split_heads(v, batch_size)  # (batch_size, num_heads, seq_len_v, depth)
+
+        # scaled_attention.shape == (batch_size, num_heads, seq_len_q, depth)
+        # attention_weights.shape == (batch_size, num_heads, seq_len_q, seq_len_k)
+        scaled_attention, attention_weights = scaled_dot_product_attention(
+            q, k, v, mask)
+
+        scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3])  # (batch_size, seq_len_q, num_heads, depth)
+
+        concat_attention = tf.reshape(scaled_attention, 
+                                      (batch_size, -1, self.d_model))  # (batch_size, seq_len_q, d_model)
+
+        output = self.dense(concat_attention)  # (batch_size, seq_len_q, d_model)
+
+        return output, attention_weights
+    
+    
+def point_wise_feed_forward_network(d_model, dff):
+    return keras.Sequential([
+      KL.Dense(dff, activation='relu'),  # (batch_size, seq_len, dff)
+      KL.Dense(d_model)  # (batch_size, seq_len, d_model)
+    ])
+
+
+class EncoderLayer(KL.Layer):
+    def __init__(self, d_model, num_heads, dff, rate=0.1):
+        super(EncoderLayer, self).__init__()
+
+        self.mha = MultiHeadAttention(d_model, num_heads)
+        self.ffn = point_wise_feed_forward_network(d_model, dff)
+
+        self.layernorm1 = KL.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = KL.LayerNormalization(epsilon=1e-6)
+
+        self.dropout1 = KL.Dropout(rate)
+        self.dropout2 = KL.Dropout(rate)
+    
+    def call(self, x, training, mask):
+
+        attn_output, _ = self.mha(x, x, x, mask)  # (batch_size, input_seq_len, d_model)
+        attn_output = self.dropout1(attn_output, training=training)
+        out1 = self.layernorm1(x + attn_output)  # (batch_size, input_seq_len, d_model)
+
+        ffn_output = self.ffn(out1)  # (batch_size, input_seq_len, d_model)
+        ffn_output = self.dropout2(ffn_output, training=training)
+        out2 = self.layernorm2(out1 + ffn_output)  # (batch_size, input_seq_len, d_model)
+
+        return out2
+
+
+class Encoder(KL.Layer):
+    def __init__(self, num_layers, d_model, num_heads, dff,
+               rate=0.1):
+        super(Encoder, self).__init__()
+
+        self.d_model = d_model
+        self.num_layers = num_layers
+
+        self.enc_layers = [EncoderLayer(d_model, num_heads, dff, rate) 
+                           for _ in range(num_layers)]
+
+        self.dropout = KL.Dropout(rate)
+        
+    def call(self, x, positions, training, mask):
+
+        if not mask:
+            mask = tf.zeros(tf.shape(x))
+        pos_encoding = positional_encoding(positions)
+        # adding embedding and position encoding.
+        x *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))
+        x += pos_encoding
+
+        x = self.dropout(x, training=training)
+
+        for i in range(self.num_layers):
+            x = self.enc_layers[i](x, training, mask)
+
+        return x  # (batch_size, input_seq_len, d_model)
+
+
+class Transformer(KM.Model):
+    def __init__(self, num_layers, d_model, num_heads, dff,
+                 target_size, rate=0.1):
+        super(Transformer, self).__init__()
+
+        self.encoder = Encoder(num_layers, d_model, num_heads, dff, 
+                               rate)
+
+        self.final_layer = KL.Dense(target_size)
+
+    def call(self, inp, positions, training, enc_padding_mask):
+
+        enc_output = self.encoder(inp, positions, training, enc_padding_mask)  # (batch_size, inp_seq_len, d_model)
+        enc_output = tf.transpose(enc_output, [0, 2, 1])
+
+        final_output = self.final_layer(enc_output)  # (batch_size, tar_seq_len, target_vocab_size)
+        final_output = tf.tranpose(final_output, [0, 2, 1])
+        return final_output
+
+
+def transformer_encoder(feats, Rcam, Kmat, config, training):
+    positions = unproj_vector([feats, Rcam, Kmat], config)
+    transformer = Transformer(num_layers=6, d_model=66, num_heads=8, dff=256, rate=0.1)
+    feats = transformer(feats, positions, training=training, enc_padding_mask=None)
+    return feats
+############################################################
+#  Projective Geometry Layers
+############################################################
+def unproj_vector(inputs, config):
+    feats, Rcam, Kmat = inputs
+    bs, im_bs, fh, fw, fdim = feats.get_shape().as_list()
+
+    Rcam = collapse_dims(Rcam)
+    Kmat = collapse_dims(Kmat)
+    feats = collapse_dims(feats)
+    # resize Kmat because original image plane had other dimension 
+    #than the one of the feature map
+    assert fh == fw, "The height and width of the feature map are not matching {} and {}".format(fh, fw) 
+    rsz_factor = float(fh) / config.IMAGE_SHAPE[0]
+    Kmat = Kmat * rsz_factor
+    
+    im_range = tf.range(0.5, fh, 1)
+    npix = fh * fh
+    image_indices = tf.stack(tf.meshgrid(im_range, im_range))
+    image_indices = tf.reshape(image_indices, [2, -1])
+
+    # Append rsz_factor to ensure that
+    image_indices = tf.concat(
+        [image_indices, tf.ones((1, npix))], axis=0)
+    image_indices = tf.reshape(image_indices, [1, 1, 3, npix])
+    image_indices = tf.tile(image_indices, [bs, im_bs, 1, 1])
+
+    camera_coordinates = tf.matrix_triangular_solve(Kmat, image_indices)
+    # sample from different depths
+    camera_coordinates = repeat_tensor(camera_coordinates, config.samples, rep_dim=2)
+    rho = tf.linspace(config.min_z, config.max_z, config.samples)
+    camera_coordinates = camera_coordinates * rho[tf.newaxis, tf.newaxis, :, tf.newaxis,
+                                tf.newaxis]
+
+    camera_coordinates = tf.concat(
+                [camera_coordinates, tf.ones([bs, im_bs, config.samples, 1, npix])],
+                axis=-2)    
+    # dimensions are now: bs, im_bs, different_depths, 4(x,y,z,1), npix
+
+    Rcam = repeat_tensor(Rcam, config.samples, rep_dim=2)
+    world_coordinates = tf.matmul(Rcam, camera_coordinates)
+    # dimensions are now: bs, im_bs, different_depths, 3(x,y,z), npix
+    return world_coordinates
+
+
+def unproj_feat(inputs, config):
+    feats, Rcam, Kmat = inputs
+
+    # Construct [R^{T}|-R^{T}t]
+    Rcam_old = Rcam
+    Rt = tf.matrix_transpose(Rcam[:, :, :, :3])
+    tr = tf.expand_dims(Rcam[:, :, :, 3], axis=-1)
+    # repeat Kmat 
+    _, num_views, _, _, _ = feats.get_shape().as_list()
+    Kmat = repeat_tensor(Kmat, num_views, rep_dim=1)
+    Rcam = tf.concat([Rt, -tf.matmul(Rt, tr)], axis=3)
+    Rcam = collapse_dims(Rcam)
+    Kmat = collapse_dims(Kmat)
+
+
+    KRcam = tf.linalg.matmul(Kmat, Rcam)
+
+    feats = collapse_dims(feats)
+    nR, fh, fw, fdim = feats.get_shape().as_list()
+    nR = num_views * config.BATCH_SIZE
+#         fh = feats.shape[1].value
+#         fw = feats.shape[2].value
+#         fdim = feats.shape[3].value
+    rsz_h = float(fh) / config.IMAGE_SHAPE[0]   # image height
+    rsz_w = float(fw) / config.IMAGE_SHAPE[1]   # image width
+
+    # Create Voxel grid 
+    # !! change coordinates, grid has to be rotated, P-C?!!
+    grid_range = tf.range(config.vmin + config.vsize / 2.0, config.vmax,
+                                  config.vsize)
+    grid_range_z = tf.range(-(config.nvox_z-1)*0.5*config.vsize, (config.nvox_z-1)*0.5*config.vsize+config.vsize/2, config.vsize)
+    grid_range = tf.expand_dims(grid_range, 0)
+    grid_range_z = tf.expand_dims(grid_range_z, 0)
+    grid_range = tf.tile(grid_range, [config.BATCH_SIZE, 1])
+    grid_range_z = tf.tile(grid_range_z, [config.BATCH_SIZE, 1])
+    # calculate position of grid in world coordinate frame
+    grid_dist = 600/320 * config.vmax
+    grid_position = K.dot(tf.reshape(Rcam_old[:,0,:,:], [-1, 3, 4]), tf.constant([0.0, 0.0, grid_dist, 1.0], shape=[4,1]) )
+    grid_position = tf.reshape(grid_position, [config.BATCH_SIZE, 3])
+    print("grid position shape: {}".format(grid_position.get_shape().as_list()))
+    # adjust grid coordinates to world frame
+    grid = tf.stack(
+        tf.meshgrid(grid_range + grid_position[:, 0, tf.newaxis],
+                    grid_range + grid_position[:, 1, tf.newaxis],
+                    grid_range_z + grid_position[:, 2, tf.newaxis]))# set z-offset from camera so that the grid side length equals the visible width
+    rs_grid = tf.reshape(grid, [3, -1])
+    nV = rs_grid.get_shape()[1].value
+    rs_grid = tf.concat([rs_grid, tf.ones([1, nV])], axis=0)
+    print("grid shape: {}".format(grid.get_shape().as_list()))
+
+    # Project grid/
+    im_p = tf.matmul(tf.reshape(KRcam, [-1, 4]), rs_grid) 
+    im_x, im_y, im_z = im_p[::3, :], im_p[1::3, :], im_p[2::3, :]
+    im_x = (im_x / im_z) * rsz_w
+    im_y = (im_y / im_z) * rsz_h
+
+
+    # Bilinear interpolation
+#     im_x = tf.clip_by_value(im_x, 0, fw - 1)
+#     im_y = tf.clip_by_value(im_y, 0, fh - 1)
+#     mask = tf.math.logical_and(im_x > 0,  im_x < fw - 1)
+    im_x0 = tf.cast(tf.floor(im_x), 'int32')
+    im_x1 = im_x0 + 1
+    im_y0 = tf.cast(tf.floor(im_y), 'int32')
+    im_y1 = im_y0 + 1
+    im_x0_f, im_x1_f = tf.to_float(im_x0), tf.to_float(im_x1)
+    im_y0_f, im_y1_f = tf.to_float(im_y0), tf.to_float(im_y1)
+
+    ind_grid = tf.range(0, nR)
+    ind_grid = tf.expand_dims(ind_grid, 1)
+    im_ind = tf.tile(ind_grid, [1, nV])
+
+    
+    def _get_gather_inds(x, y):
+        indices = tf.reshape(tf.stack([im_ind, y, x], axis=2), [-1, 3])
+        return indices
+
+    # Gather  values
+    Ia = tf.gather_nd(feats, _get_gather_inds(im_x0, im_y0))
+    Ib = tf.gather_nd(feats, _get_gather_inds(im_x0, im_y1))
+    Ic = tf.gather_nd(feats, _get_gather_inds(im_x1, im_y0))
+    Id = tf.gather_nd(feats, _get_gather_inds(im_x1, im_y1))
+    # Calculate bilinear weights
+    wa = (im_x1_f - im_x) * (im_y1_f - im_y)
+    wb = (im_x1_f - im_x) * (im_y - im_y0_f)
+    wc = (im_x - im_x0_f) * (im_y1_f - im_y)
+    wd = (im_x - im_x0_f) * (im_y - im_y0_f)
+    wa, wb = tf.reshape(wa, [-1, 1]), tf.reshape(wb, [-1, 1])
+    wc, wd = tf.reshape(wc, [-1, 1]), tf.reshape(wd, [-1, 1])
+    Ibilin = tf.add_n([wa * Ia, wb * Ib, wc * Ic, wd * Id])
+
+    fdim = Ibilin.get_shape()[-1].value
+    Ibilin = tf.reshape(Ibilin, [
+        config.BATCH_SIZE, num_views, config.nvox, config.nvox, config.nvox_z,
+        fdim
+    ])
+    Ibilin = tf.transpose(Ibilin, [0, 1, 3, 2, 4, 5])
+
+    return [Ibilin, grid_position]
+
+
+def proj_grid(inputs, config, proj_size):
+    """ projects the 3D feature grid back into a 2D image plane with equal side lengths of proj_size
+    """
+    grid, grid_pos, Rcam, Kmat = inputs
+    rsz_factor = float(proj_size) / config.IMAGE_SHAPE[0]   # image height
+    Kmat = Kmat * rsz_factor
+
+    Kmat = repeat_tensor(Kmat, 1, rep_dim=1)
+    K_shape = Kmat.get_shape().as_list()
+   
+    bs, h, w, d, ch = grid.get_shape().as_list()
+#     im_bs = Rcam.get_shape().as_list()[1]
+
+    Rcam = tf.reshape(Rcam[:,0,:,:], [bs, 1, 3, 4])
+    
+    npix = proj_size**2
+    with tf.variable_scope('ProjSlice'):
+        # Setup dimensions
+        with tf.name_scope('PixelCenters'):
+            # Setup image grids to unproject along rays
+            im_range = tf.range(0.5, proj_size, 1)
+            im_grid = tf.stack(tf.meshgrid(im_range, im_range))
+            rs_grid = tf.reshape(im_grid, [2, -1])
+            # Append rsz_factor to ensure that
+            rs_grid = tf.concat(
+                [rs_grid, tf.ones((1, npix)) * rsz_factor], axis=0)
+            rs_grid = tf.reshape(rs_grid, [1, 1, 3, npix])
+            rs_grid = tf.tile(rs_grid, [bs, 1, 1, 1])#[bs, im_bs, 1, 1]
+
+        with tf.name_scope('Im2Cam'):
+            # Compute Xc - points in camera frame
+            Xc = tf.matrix_triangular_solve(
+                Kmat, rs_grid, lower=False, name='KinvX')
+            
+            # Define z values of samples along ray
+            grid_dist = 600/320 * config.vmax 
+            z_samples = tf.linspace(grid_dist - config.vmax*0.5, grid_dist + config.vmax*0.5, config.samples)
+
+            # Transform Xc to Xw using transpose of rotation matrix
+            Xc = repeat_tensor(Xc, config.samples, rep_dim=2)
+            
+            Xc = Xc * z_samples[tf.newaxis, tf.newaxis, :, tf.newaxis,
+                                tf.newaxis]
+            
+            Xc = tf.concat(
+                [Xc, tf.ones([bs, 1, config.samples, 1, npix])],#[bs, im_bs, 1, 1]
+                axis=-2)
+            
+        with tf.name_scope('Cam2World'):
+            Rcam = repeat_tensor(Rcam, config.samples, rep_dim=2)
+            Xw = tf.matmul(Rcam, Xc)
+            # Transform world points to grid locations to sample from
+            grid_pos = repeat_tensor(grid_pos, npix, rep_dim=-1)
+            # take non symmetric grid into account
+            vmin = tf.reshape(tf.constant([config.vmin, config.vmin, -config.nvox_z*0.5*config.vsize]), [1, 1, 3, 1])
+            vmax = tf.reshape(tf.constant([config.vmax, config.vmax, config.nvox_z*0.5*config.vsize]), [1, 1, 3, 1])
+            nvox = tf.reshape(tf.constant([config.nvox*1.0, config.nvox*1.0, config.nvox_z*1.0]), [1, 1, 3, 1]) 
+            Xw = (Xw - grid_pos - vmin)
+            Xw = (Xw / (vmax - vmin)) * nvox
+
+            # bs, im_bs, samples, npix, 3
+            Xw = tf.transpose(Xw, [0, 1, 2, 4, 3])
+
+        with tf.name_scope('Interp'):
+#                 sample_grid = collapse_dims(grid)
+            sample_grid = grid
+            sample_locs = collapse_dims(Xw)
+
+            lshape = [bs * 1] + tf_static_shape(sample_locs)[1:] #tf_static_shape(sample_locs) [bs * 1]
+            vox_idx = tf.range(lshape[0])
+            vox_idx = repeat_tensor(vox_idx, lshape[1], rep_dim=1)
+            vox_idx = tf.reshape(vox_idx, [-1, 1])
+            vox_idx = repeat_tensor(vox_idx, 1 * npix, rep_dim=1)
+            vox_idx = tf.reshape(vox_idx, [-1, 1])
+            sample_idx = tf.concat(
+                [tf.to_float(vox_idx),
+                tf.reshape(sample_locs, [-1, 3])],
+                axis=1)
+
+            g_val = nearest3(sample_grid, sample_idx)
+            g_val = tf.reshape(g_val, [
+                bs, config.samples, proj_size, proj_size, -1    #bs, im_bs, proj_size, proj_size, -1
+            ])
+            ray_slices = tf.transpose(g_val, [0, 1, 2, 3, 4])
+            return ray_slices
+
+            
+def repeat_tensor(T, nrep, rep_dim=1):
+        repT = tf.expand_dims(T, rep_dim)
+        tile_dim = [1] * len(tf_static_shape(repT))
+        tile_dim[rep_dim] = nrep
+        repT = tf.tile(repT, tile_dim)
+        return repT
+
+    
+def collapse_dims(T):
+    shape = tf_static_shape(T)
+    return tf.reshape(T, [-1] + shape[2:])
+
+
+def tf_static_shape(T):
+    return T.get_shape().as_list()
+
+
+def nearest3(grid, idx, clip=False):
+    with tf.variable_scope('NearestInterp'):
+        _, h, w, d, f = grid.get_shape().as_list()
+        x, y, z = idx[:, 1], idx[:, 2], idx[:, 3]
+        g_val = tf.gather_nd(grid, tf.cast(tf.round(idx), 'int32'))
+        if clip:
+            x_inv = tf.logical_or(x < 0, x > h - 1)
+            y_inv = tf.logical_or(y < 0, y > w - 1)
+            z_inv = tf.logical_or(z < 0, x > d - 1)
+            valid_idx = 1 - \
+                tf.to_float(tf.logical_or(tf.logical_or(x_inv, y_inv), z_inv))
+            g_val = g_val * valid_idx[tf.newaxis, ...]
+        return g_val
+    
+    
+def quat2rot(q):
+    '''q = [w, x, y, z]
+    https://en.wikipedia.org/wiki/Rotation_matrix#Quaternion'''
+    eps = 1e-5
+    w, x, y, z = q
+    n = np.linalg.norm(q)
+    s = (0 if n < eps else 2.0 / n)
+    wx = s * w * x
+    wy = s * w * y
+    wz = s * w * z
+    xx = s * x * x
+    xy = s * x * y
+    xz = s * x * z
+    yy = s * y * y
+    yz = s * y * z
+    zz = s * z * z
+    R = np.array([[1 - (yy + zz), xy - wz,
+                   xz + wy], [xy + wz, 1 - (xx + zz), yz - wx],
+                  [xz - wy, yz + wx, 1 - (xx + yy)]])
+    return R
+
+
+def grid_reas(inputs, scope, config, kernel=(3, 3, 3), filters=256):
+
+    x = inputs
+#     x = KL.Lambda(lambda x: tf.reshape(x, grid_shape[0:4] + [grid_shape[4]*grid_shape[5]]))(x)
+    name_conv = scope + '_3D_conv'
+    name_bn = scope + '_batch_norm'
+    if config.GRID_REAS == 'mean':
+        grid_shape = tf_static_shape(x)
+        x = KL.Lambda(lambda x: tf.transpose(x, [0, 5, 2, 3, 4, 1]))(x)
+        x = KL.Lambda(lambda x: K.mean(x, axis=-1)[:, :, :, :, :, None])(x)
+        x = KL.Lambda(lambda x: tf.transpose(x, [0, 5, 2, 3, 4, 1]))(x)
+        x = KL.Lambda(lambda x: tf.reshape(x, [grid_shape[0]] + grid_shape[2:]))(x)
+        x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
+        x = KL.Activation('relu')(x)
+        
+    elif config.GRID_REAS == 'conv3d':
+        grid_shape = tf_static_shape(x)
+        x_shape = x.shape.as_list()
+        # reorder dimensions from batch_size, num_views, h, w, d, chn to batch_size, h, w, d chn*num_views
+        x = KL.Lambda(lambda x: tf.reshape(x, [x_shape[0]]+x_shape[2:-1]+[x_shape[1]*x_shape[-1]]))(x)
+        x = KL.Activation('relu')(x)
+        if name_conv not in reused_lay:
+            reused_lay[name_conv] = KL.Conv3D(filters=config.TOP_DOWN_PYRAMID_SIZE, kernel_size=(3,3,3), padding='same', name=name_conv)
+        x = reused_lay[name_conv](x)
+        x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
+#         x = KL.LeakyReLU(alpha=0.01)(x)
+        x = KL.Activation('relu')(x)
+    
+    elif config.GRID_REAS == 'ident':
+        x_shape = x.shape.as_list()
+        x = KL.Lambda(lambda x: tf.reshape(x, [x_shape[0]]+x_shape[2:-1]+[x_shape[1]*x_shape[-1]]))(x)
+        x = KL.Activation('relu')(x)
+        if name_conv not in reused_lay:
+            reused_lay[name_conv] = KL.Conv3D(
+                filters=config.TOP_DOWN_PYRAMID_SIZE, kernel_size=(1,1,1), 
+                padding='same', name=scope+'ident_conv')
+        x = reused_lay[name_conv](x)
+        x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
+        x = KL.Activation('relu')(x)
+        
+    elif config.GRID_REAS == 'lstm3d':
+        name_conv = scope + '_convlstm3d'
+        x = KL.Activation('relu')(x)
+        x = convlstm(x, name=name_conv, kernel=[3, 3, 3], filters=config.TOP_DOWN_PYRAMID_SIZE)
+        x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
+        x = KL.Activation('relu')(x)
+        
+    return x
+    
+    
+def depth_sampling(x, config, name):
+    x = KL.TimeDistributed(KL.Conv2D(1, (1,1), padding='same'), name=name+'2DConv')(x)
+    x = add_bn_layer(name=name+'bn')(x, training=config.TRAIN_BN)
+#     x = KL.LeakyReLU(alpha=0.01)(x)
+    x = KL.Activation('relu')(x)
+    return x
 ############################################################
 #  Resnet Graph
 ############################################################
 
+# class bb_resnet_fpn(KL.Layer):
+#     def __init__(self, config, architecture, stage5=True, train_bn=True, **kwargs):
+#         self.config = config
+#         super(bb_resnet_fpn, self).__init__(**kwargs)
+#     def call(self, inputs):
+#         ''' computes the feature map for one batch'''
+#         input_image = inputs
+#         print("input_image_shape: {}".format(input_image.get_shape().as_list()))
+#         config = self.config
+#         print("fn image_shape: {}".format(input_image.get_shape().as_list()))
+#         if callable(config.BACKBONE):
+#             _, C2, C3, C4, C5 = config.BACKBONE(input_image, stage5=True,
+#                                                 train_bn=config.TRAIN_BN)
+#         else:
+#             _, C2, C3, C4, C5 = resnet_graph(input_image, architecture=config.BACKBONE, stage5=True, train_bn=True)
+#         # Top-down Layers
+#         # TODO: add assert to varify feature map sizes match what's in config
+#         P5 = tf.keras.layers.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')(C5)
+#         P4 = tf.keras.layers.Add()([
+#             tf.keras.layers.UpSampling2D(size=(2, 2))(P5),
+#             tf.keras.layers.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')(C4)])
+#         P3 = tf.keras.layers.Add()([
+#             tf.keras.layers.UpSampling2D(size=(2, 2))(P4),
+#             tf.keras.layers.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')(C3)])
+#         P2 = tf.keras.layers.Add()([
+#             tf.keras.layers.UpSampling2D(size=(2, 2), name="fpn_p3upsampled")(P3),
+#             tf.keras.layers.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')(C2)])
+#         # Attach 3x3 conv to all P layers to get the final feature maps.
+#         P2 = tf.keras.layers.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p2")(P2)
+#         P3 = tf.keras.layers.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p3")(P3)
+#         P4 = tf.keras.layers.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p4")(P4)
+#         P5 = tf.keras.layers.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p5")(P5)
+#         # P6 is used for the 5th anchor scale in RPN. Generated by
+#         # subsampling from P5 with stride of 2.
+#         P6 = tf.keras.layers.MaxPool2D(pool_size=(1, 1), strides=2)(P5)
+# #         results = tf.stack([P2, P3, P4, P5, P6], axis=0, name='stack')
+
+#         print("shape_out: {}".format(P2.get_shape().as_list()))
+#         print("shape_out: {}".format(P3.get_shape().as_list()))
+#         print("shape_out: {}".format(P4.get_shape().as_list()))
+#         print("shape_out: {}".format(P5.get_shape().as_list()))
+#         print("shape_out: {}".format(P6.get_shape().as_list()))
+#         return [P2, P3, P4, P5, P6]
+    
+#     def compute_output_shape(self,inputShape):
+#         #calculate shapes from input shape   
+#         print("compute_output_shape")
+#         return [(None, None, None, 256)]*5
+    
 # Code adopted from:
 # https://github.com/fchollet/deep-learning-models/blob/master/resnet50.py
 
+def add_conv_layer(input, scope, filters, kernel_size, strides=(1, 1), name='conv1', use_bias=True, padding='valid'):
+#     if name not in reused_lay:
+#         reused_lay[name] = KL.Conv2D(filters, kernel_size, strides=strides, name=name, use_bias=use_bias, padding=padding)
+#     x = reused_lay[name](input)
+    x = KL.Conv2D(filters, kernel_size, strides=strides, name=name, use_bias=use_bias, padding=padding)(input)
+    return x
+
+def add_bn_layer(name):
+#     if name not in reused_lay:
+#         reused_lay[name] = BatchNorm(name=name)
+#     return reused_lay[name]
+    return BatchNorm(name=name)
 def identity_block(input_tensor, kernel_size, filters, stage, block,
                    use_bias=True, train_bn=True):
     """The identity_block is the block that has no conv layer at shortcut
@@ -108,22 +1061,19 @@ def identity_block(input_tensor, kernel_size, filters, stage, block,
     conv_name_base = 'res' + str(stage) + block + '_branch'
     bn_name_base = 'bn' + str(stage) + block + '_branch'
 
-    x = KL.Conv2D(nb_filter1, (1, 1), name=conv_name_base + '2a',
-                  use_bias=use_bias)(input_tensor)
-    x = BatchNorm(name=bn_name_base + '2a')(x, training=train_bn)
+    x = add_conv_layer(input_tensor, conv_name_base, nb_filter1, (1, 1), name=conv_name_base + '2a', use_bias=use_bias)
+    x = add_bn_layer(name=bn_name_base + '2a')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+    
+    x = add_conv_layer(x, conv_name_base, nb_filter2, (kernel_size, kernel_size), padding='same', name=conv_name_base + '2b', use_bias=use_bias)
+    x = add_bn_layer(name=bn_name_base + '2b')(x, training=train_bn)
     x = KL.Activation('relu')(x)
 
-    x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding='same',
-                  name=conv_name_base + '2b', use_bias=use_bias)(x)
-    x = BatchNorm(name=bn_name_base + '2b')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
-
-    x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c',
-                  use_bias=use_bias)(x)
-    x = BatchNorm(name=bn_name_base + '2c')(x, training=train_bn)
+    x = add_conv_layer(x, conv_name_base,nb_filter3, (1, 1), name=conv_name_base + '2c', use_bias=use_bias)
+    x = add_bn_layer(name=bn_name_base + '2c')(x, training=train_bn)
 
     x = KL.Add()([x, input_tensor])
-    x = KL.Activation('relu', name='res' + str(stage) + block + '_out')(x)
+    x = KL.Activation('relu')(x)
     return x
 
 
@@ -144,66 +1094,73 @@ def conv_block(input_tensor, kernel_size, filters, stage, block,
     nb_filter1, nb_filter2, nb_filter3 = filters
     conv_name_base = 'res' + str(stage) + block + '_branch'
     bn_name_base = 'bn' + str(stage) + block + '_branch'
-
-    x = KL.Conv2D(nb_filter1, (1, 1), strides=strides,
-                  name=conv_name_base + '2a', use_bias=use_bias)(input_tensor)
-    x = BatchNorm(name=bn_name_base + '2a')(x, training=train_bn)
+    x = add_conv_layer(input_tensor, conv_name_base, nb_filter1, (1, 1), strides=strides, name=conv_name_base + '2a', use_bias=use_bias)
+    x = add_bn_layer(name=bn_name_base + '2a')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+    
+    x = add_conv_layer(x, conv_name_base, nb_filter2, (kernel_size, kernel_size), padding='same', name=conv_name_base + '2b', use_bias=use_bias)
+    x = add_bn_layer(name=bn_name_base + '2b')(x, training=train_bn)
     x = KL.Activation('relu')(x)
 
-    x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding='same',
-                  name=conv_name_base + '2b', use_bias=use_bias)(x)
-    x = BatchNorm(name=bn_name_base + '2b')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
-
-    x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base +
-                  '2c', use_bias=use_bias)(x)
-    x = BatchNorm(name=bn_name_base + '2c')(x, training=train_bn)
-
-    shortcut = KL.Conv2D(nb_filter3, (1, 1), strides=strides,
-                         name=conv_name_base + '1', use_bias=use_bias)(input_tensor)
-    shortcut = BatchNorm(name=bn_name_base + '1')(shortcut, training=train_bn)
+    x = add_conv_layer(x, conv_name_base, nb_filter3, (1, 1), name=conv_name_base + '2c', use_bias=use_bias)
+    x = add_bn_layer(name=bn_name_base + '2c')(x, training=train_bn)
+    
+    shortcut = add_conv_layer(input_tensor, conv_name_base, nb_filter3, (1, 1), strides=strides, name=conv_name_base + '1', use_bias=use_bias)
+    shortcut = add_bn_layer(name=bn_name_base + '1')(shortcut, training=train_bn)
 
     x = KL.Add()([x, shortcut])
-    x = KL.Activation('relu', name='res' + str(stage) + block + '_out')(x)
+    x = KL.Activation('relu')(x)
     return x
 
-
-def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
-    """Build a ResNet graph.
-        architecture: Can be resnet50 or resnet101
-        stage5: Boolean. If False, stage5 of the network is not created
-        train_bn: Boolean. Train or freeze Batch Norm layers
-    """
-    assert architecture in ["resnet50", "resnet101"]
+def resnet_stage1(input_shape, train_bn=True):
     # Stage 1
+    input_image = KL.Input(shape=input_shape)
     x = KL.ZeroPadding2D((3, 3))(input_image)
     x = KL.Conv2D(64, (7, 7), strides=(2, 2), name='conv1', use_bias=True)(x)
     x = BatchNorm(name='bn_conv1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
     C1 = x = KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same")(x)
+    model = KM.Model(input_image, C1, name='resnet_stage1')
+    return model
+
+def resnet_stage2(input_shape, train_bn=True):
     # Stage 2
-    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
-    x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', train_bn=train_bn)
-    C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', train_bn=train_bn)
+    input_image = KL.Input(shape=input_shape)
+    x = conv_block(x, 3, [32, 32, 128], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
+    x = identity_block(x, 3, [32, 32, 128], stage=2, block='b', train_bn=train_bn)
+    C2 = x = identity_block(x, 3, [32, 32, 128], stage=2, block='c', train_bn=train_bn)
+    model = KM.Model(input_image, C2, name='resnet_stage2')
+    return model
+
+def resnet_stage3(input_shape, train_bn=True):
     # Stage 3
-    x = conv_block(x, 3, [128, 128, 512], stage=3, block='a', train_bn=train_bn)
-    x = identity_block(x, 3, [128, 128, 512], stage=3, block='b', train_bn=train_bn)
-    x = identity_block(x, 3, [128, 128, 512], stage=3, block='c', train_bn=train_bn)
-    C3 = x = identity_block(x, 3, [128, 128, 512], stage=3, block='d', train_bn=train_bn)
-    # Stage 4
-    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a', train_bn=train_bn)
-    block_count = {"resnet50": 5, "resnet101": 22}[architecture]
+    input_image = KL.Input(shape=input_shape)
+    x = conv_block(x, 3, [64, 64, 128], stage=3, block='a', train_bn=train_bn)
+    x = identity_block(x, 3, [64, 64, 128], stage=3, block='b', train_bn=train_bn)
+    x = identity_block(x, 3, [64, 64, 128], stage=3, block='c', train_bn=train_bn)
+    C3 = x = identity_block(x, 3, [64, 64, 128], stage=3, block='d', train_bn=train_bn)
+    model = KM.Model(input_image, C3, name='resnet_stage3')
+    return model
+
+def resnet_stage4(input_shape, architecture, train_bn=True):
+    input_image = KL.Input(shape=input_shape)
+    assert architecture in ["resnet50", "resnet101"]
+    x = conv_block(x, 3, [64, 64, 256], stage=4, block='a', train_bn=train_bn)
+    block_count = {"resnet50": 3, "resnet101": 22}[architecture]
     for i in range(block_count):
-        x = identity_block(x, 3, [256, 256, 1024], stage=4, block=chr(98 + i), train_bn=train_bn)
+        x = identity_block(x, 3, [128, 128, 256], stage=4, block=chr(98 + i), train_bn=train_bn)
     C4 = x
-    # Stage 5
-    if stage5:
-        x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a', train_bn=train_bn)
-        x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b', train_bn=train_bn)
-        C5 = x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c', train_bn=train_bn)
-    else:
-        C5 = None
-    return [C1, C2, C3, C4, C5]
+    model = KM.Model(input_image, C4, name='resnet_stage4')
+    return model
+
+def resnet_stage5(input_shape, train_bn):
+    input_image = KL.Input(shape=input_shape)
+    x = conv_block(x, 3, [128, 128, 256], stage=5, block='a', train_bn=train_bn)
+    x = identity_block(x, 3, [128, 128, 256], stage=5, block='b', train_bn=train_bn)
+    C5 = x = identity_block(x, 3, [128, 128, 256], stage=5, block='c', train_bn=train_bn)
+    model = KM.Model(input_image, C5, name='resnet_stage5')
+    return model
+    
 
 # def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
 #     """Build a ResNet graph.
@@ -242,6 +1199,164 @@ def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
 #         C5 = None
 #     return [C1, C2, C3, C4, C5]
 
+
+def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
+    """Build a ResNet graph.
+        architecture: Can be resnet50 or resnet101
+        stage5: Boolean. If False, stage5 of the network is not created
+        train_bn: Boolean. Train or freeze Batch Norm layers
+    """
+    assert architecture in ["resnet50", "resnet101"]
+    # Stage 1
+    x = KL.ZeroPadding2D((3, 3))(input_image)
+    x = add_conv_layer(x, scope='res1', filters=64, kernel_size=(7, 7), strides=(2, 2), name='conv1', use_bias=True)
+    x = add_bn_layer(name='bn_conv1')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+    C1 = x = KL.MaxPool2D((3, 3), strides=(2, 2), padding="same")(x)
+    # Stage 2
+    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
+    x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', train_bn=train_bn)
+    C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', train_bn=train_bn)
+    # Stage 3
+    x = conv_block(x, 3, [128, 128, 512], stage=3, block='a', train_bn=train_bn)
+    x = identity_block(x, 3, [128, 128, 512], stage=3, block='b', train_bn=train_bn)
+    x = identity_block(x, 3, [128, 128, 512], stage=3, block='c', train_bn=train_bn)
+    C3 = x = identity_block(x, 3, [128, 128, 512], stage=3, block='d', train_bn=train_bn)
+    # Stage 4
+    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a', train_bn=train_bn)
+    block_count = {"resnet50": 5, "resnet101": 22}[architecture]
+    for i in range(block_count):
+        x = identity_block(x, 3, [256, 256, 1024], stage=4, block=chr(98 + i), train_bn=train_bn)
+    C4 = x
+    # Stage 5
+    if stage5:
+        x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a', train_bn=train_bn)
+        x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b', train_bn=train_bn)
+        C5 = x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c', train_bn=train_bn)
+    else:
+        C5 = None
+    return [C1, C2, C3, C4, C5]
+
+def build_resnet_fpn(input_image, config):
+    ''' computes the feature map for one batch'''
+    print("input_image_shape: {}".format(input_image.get_shape().as_list()))
+    print("fn image_shape: {}".format(input_image.get_shape().as_list()))
+    if callable(config.BACKBONE):
+        _, C2, C3, C4, C5 = config.BACKBONE(input_image, stage5=True,
+                                            train_bn=config.TRAIN_BN)
+    else:
+        _, C2, C3, C4, C5 = resnet_graph(input_image, architecture=config.BACKBONE, stage5=True, train_bn=config.TRAIN_BN)
+    # Top-down Layers
+    # TODO: add assert to varify feature map sizes match what's in config
+    P5 = add_conv_layer(C5, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')
+    P4 = KL.Add()([
+        KL.UpSampling2D(size=(2, 2))(P5),
+        add_conv_layer(C4, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')])
+    P3 = KL.Add()([
+        KL.UpSampling2D(size=(2, 2))(P4),
+        add_conv_layer(C3, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')])
+    P2 = KL.Add()([
+        KL.UpSampling2D(size=(2, 2))(P3),
+        add_conv_layer(C2, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')])
+    # Attach 3x3 conv to all P layers to get the final feature maps.
+    P2 = add_conv_layer(P2, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p2")
+    P3 = add_conv_layer(P3, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p3")
+    P4 = add_conv_layer(P4, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p4")
+    P5 = add_conv_layer(P5, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p5")
+    # P6 is used for the 5th anchor scale in RPN. Generated by
+    # subsampling from P5 with stride of 2.
+    P6 = KL.MaxPool2D(pool_size=(1, 1), strides=2)(P5)
+
+    print("shape_out: {}".format(P2.get_shape().as_list()))
+    print("shape_out: {}".format(P3.get_shape().as_list()))
+    print("shape_out: {}".format(P4.get_shape().as_list()))
+    print("shape_out: {}".format(P5.get_shape().as_list()))
+    print("shape_out: {}".format(P6.get_shape().as_list()))
+    return [P2, P3, P4, P5, P6]
+
+
+def build_fpn_P5(input_shape, config):
+    input_image = KL.Input(shape=input_shape)
+    P5 = add_conv_layer(C5, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')
+    P5 = add_conv_layer(P5, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p5")
+    model = KM.Model(input_image, P5, name='fpn_P5')
+    return model
+
+
+def build_fpn_P4(P5, C4, config):
+    input_P5 = KL.Input(shape=input_shape_P5)
+    input_C4 = KL.Input(shape=input_shape_C4)
+    P4 = KL.Add()([
+        KL.UpSampling2D(size=(2, 2))(P5),
+        add_conv_layer(C4, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')])
+    P4 = add_conv_layer(P4, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p4")
+    model
+    return P4
+
+
+def build_fpn_P3(P4, C3, config):
+    P3 = KL.Add()([
+        KL.UpSampling2D(size=(2, 2))(P4),
+        add_conv_layer(C3, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')])
+    P3 = add_conv_layer(P3, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p3")
+    return P3
+
+
+def build_fpn_P2(P3, C2, config):
+    P2 = KL.Add()([
+        KL.UpSampling2D(size=(2, 2))(P3),
+        add_conv_layer(C2, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')])
+    P2 = add_conv_layer(P2, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p2")
+    return P2
+
+def build_fpn_P6(P5, config):
+    P6 = KL.MaxPool2D(pool_size=(1, 1), strides=2)(P5)
+    return P6
+
+
+
+    
+"""
+def view_merger_model(input_shape, config):
+    print("shape of input: {}".format(input_shape))
+    input_images = KL.Input(shape=[config.NUM_VIEWS]+input_shape)
+    
+    P2, P3, P4, P5, P6 = build_resnet_fpn(KL.Lambda(lambda x: x[:,0,:,:,:])(input_images), config=config)
+   
+    for i in range(1, config.NUM_VIEWS):
+        P2_t, P3_t, P4_t, P5_t, P6_t = build_resnet_fpn(KL.Lambda(lambda x: x[:,i,:,:,:])(input_images), config=config)
+        print("finished")
+        print("P2_t: {}".format(P2_t.get_shape().as_list()))
+        P2 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P2, P2_t])
+        P3 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P3, P3_t])
+        P4 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P4, P4_t])
+        P5 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P5, P5_t])
+        P6 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P6, P6_t])
+    if config.NUM_VIEWS == 1:
+        P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)
+        P3 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3)
+        P4 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4)
+        P5 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5)
+        P6 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6)
+   
+    print("shape_out: {}".format(P2.get_shape().as_list()))
+    print("shape_out: {}".format(P3.get_shape().as_list()))
+    print("shape_out: {}".format(P4.get_shape().as_list()))
+    print("shape_out: {}".format(P5.get_shape().as_list()))
+    print("shape_out: {}".format(P6.get_shape().as_list()))
+    merged_bb = KM.Model(input_images, [P2, P3, P4, P5, P6], name='backbone')
+    print("finished whole bb model")
+    return merged_bb
+"""
+def view_merger_model(input_shape, config):
+    print("shape of input: {}".format(input_shape))
+    input_images = KL.Input(shape=input_shape)
+    
+    P2, P3, P4, P5, P6 = build_resnet_fpn(input_images, config=config)
+    
+    merged_bb = KM.Model(input_images, [P2, P3, P4, P5, P6], name='backbone')
+    print("finished whole bb model")
+    return merged_bb
 
 ############################################################
 #  Proposal Layer
@@ -324,6 +1439,8 @@ class ProposalLayer(KE.Layer):
         pre_nms_limit = tf.minimum(self.config.PRE_NMS_LIMIT, tf.shape(anchors)[1])
         ix = tf.nn.top_k(scores, pre_nms_limit, sorted=True,
                          name="top_anchors").indices
+        print("score_shape: {}".format(scores.get_shape().as_list()))
+        print("ix_shape: {}".format(ix.get_shape().as_list()))
         scores = utils.batch_slice([scores, ix], lambda x, y: tf.gather(x, y),
                                    self.config.IMAGES_PER_GPU)
         deltas = utils.batch_slice([deltas, ix], lambda x, y: tf.gather(x, y),
@@ -873,7 +1990,8 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
                    every pixel in the feature map), or 2 (every other pixel).
 
     Returns:
-        rpn_class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
+        
+        _class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
         rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
         rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
                   applied to anchors.
@@ -883,6 +2001,8 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
     # Shared convolutional base of the RPN
     print("feature_map_rpn: {}".format(feature_map.get_shape().as_list()))
     print("feature_map_rpn2: {}".format(type(feature_map)))
+    print("feature_map: {}".format(feature_map))
+
     shared = KL.Conv2D(512, (3, 3), padding='same', activation='relu',
                        strides=anchor_stride,
                        name='rpn_conv_shared')(feature_map)
@@ -1667,219 +2787,6 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
     rois[-remaining_count:] = global_rois
     return rois
 
-# def data_generator(dataset, config, shuffle=True, augment=False, augmentation=None,
-#                    random_rois=0, batch_size=1, detection_targets=False,
-#                    no_augmentation_sources=None):
-#     """A generator that returns images and corresponding target class ids,
-#     bounding box deltas, and masks.
-
-#     dataset: The Dataset object to pick data from
-#     config: The model config object
-#     shuffle: If True, shuffles the samples before every epoch
-#     augment: (deprecated. Use augmentation instead). If true, apply random
-#         image augmentation. Currently, only horizontal flipping is offered.
-#     augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
-#         For example, passing imgaug.augmenters.Fliplr(0.5) flips images
-#         right/left 50% of the time.
-#     random_rois: If > 0 then generate proposals to be used to train the
-#                  network classifier and mask heads. Useful if training
-#                  the Mask RCNN part without the RPN.
-#     batch_size: How many images to return in each call
-#     detection_targets: If True, generate detection targets (class IDs, bbox
-#         deltas, and masks). Typically for debugging or visualizations because
-#         in trainig detection targets are generated by DetectionTargetLayer.
-#     no_augmentation_sources: Optional. List of sources to exclude for
-#         augmentation. A source is string that identifies a dataset and is
-#         defined in the Dataset class.
-
-#     Returns a Python generator. Upon calling next() on it, the
-#     generator returns two lists, inputs and outputs. The contents
-#     of the lists differs depending on the received arguments:
-#     inputs list:
-#     - images: [batch, H, W, C]
-#     - image_meta: [batch, (meta data)] Image details. See compose_image_meta()
-#     - rpn_match: [batch, N] Integer (1=positive anchor, -1=negative, 0=neutral)
-#     - rpn_bbox: [batch, N, (dy, dx, log(dh), log(dw))] Anchor bbox deltas.
-#     - gt_class_ids: [batch, MAX_GT_INSTANCES] Integer class IDs
-#     - gt_boxes: [batch, MAX_GT_INSTANCES, (y1, x1, y2, x2)]
-#     - gt_masks: [batch, height, width, MAX_GT_INSTANCES]. The height and width
-#                 are those of the image unless use_mini_mask is True, in which
-#                 case they are defined in MINI_MASK_SHAPE.
-
-#     outputs list: Usually empty in regular training. But if detection_targets
-#         is True then the outputs list contains target class_ids, bbox deltas,
-#         and masks.
-#     """
-#     b = 0  # batch item index
-    
-#     instance_index = -1
-#     instance_ids = np.copy(list(dataset.instance_map.keys()))
-#     error_count = 0
-#     if not config.USE_RPN_ROIS:
-#         random_rois = config.POST_NMS_ROIS_TRAINING
-#     no_augmentation_sources = no_augmentation_sources or []
-
-#     # Anchors
-#     # [anchor_count, (y1, x1, y2, x2)]
-#     backbone_shapes = compute_backbone_shapes(config, config.IMAGE_SHAPE)
-#     anchors = utils.generate_pyramid_anchors(config.RPN_ANCHOR_SCALES,
-#                                              config.RPN_ANCHOR_RATIOS,
-#                                              backbone_shapes,
-#                                              config.BACKBONE_STRIDES,
-#                                              config.RPN_ANCHOR_STRIDE)
-
-#     # Keras requires a generator to run indefinitely.
-#     while True:
-#         try:
-#             # Increment index to pick next image. Shuffle if at the start of an epoch.
-#             instance_index = (instance_index + 1) % len(instance_ids)
-#             if shuffle and instance_index == 0:
-#                 np.random.shuffle(instance_ids)
-
-#             # Get GT bounding boxes and masks for image.
-#             instance_id = instance_ids[instance_index]
-#             image_ids = dataset.load_view(2, instance=instance_id)
-# #             print("image_ids: {}".format(image_ids))
-#             # skip instance if it has to few views (return of load_views=None)
-#             if not image_ids:
-#                 continue
-                
-#             image_id = image_ids[0]
-#             # If the image source is not to be augmented pass None as augmentation
-#             if dataset.image_info[image_id]['source'] in no_augmentation_sources:
-#                 _, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-#                 load_image_gt(dataset, config, image_id, augment=augment,
-#                               augmentation=None,
-#                               use_mini_mask=config.USE_MINI_MASK)
-#                 image = []
-#                 for i in range(1):
-#                     image_t, _, _, _, _ = \
-#                     load_image_gt(dataset, config, image_ids[i], augment=augment,
-#                                   augmentation=None,
-#                                   use_mini_mask=config.USE_MINI_MASK)
-#                     image.append(image_t)
-#             else:
-#                 _, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-#                     load_image_gt(dataset, config, image_id, augment=augment,
-#                                 augmentation=augmentation,
-#                                 use_mini_mask=config.USE_MINI_MASK)
-#                 image = []
-                
-#                 for i in range(1):
-#                     image_t, _, _, _, _ = \
-#                     load_image_gt(dataset, config, image_ids[i], augment=augment,
-#                                 augmentation=augmentation,
-#                                 use_mini_mask=config.USE_MINI_MASK)
-#                     image.append(image_t)
-                
-#             # Skip images that have no instances. This can happen in cases
-#             # where we train on a subset of classes and the image doesn't
-#             # have any of the classes we care about.
-#             if not np.any(gt_class_ids > 0):
-#                 continue
-
-#             # RPN Targets
-#             rpn_match, rpn_bbox = build_rpn_targets(image[0].shape, anchors,
-#                                                     gt_class_ids, gt_boxes, config)
-# #             print("image shape in generator: {}".format(image[0].shape))
-#             assert np.any(rpn_match), "no rpn_match in generator"
-#             # Mask R-CNN Targets
-#             if random_rois:
-#                 rpn_rois = generate_random_rois(
-#                     image[0].shape, random_rois, gt_class_ids, gt_boxes)
-#                 if detection_targets:
-#                     rois, mrcnn_class_ids, mrcnn_bbox, mrcnn_mask =\
-#                         build_detection_targets(
-#                             rpn_rois, gt_class_ids, gt_boxes, gt_masks, config)
-#             # Init batch arrays
-#             if b == 0:
-#                 batch_image_meta = np.zeros(
-#                     (batch_size,) + image_meta.shape, dtype=image_meta.dtype)
-#                 batch_rpn_match = np.zeros(
-#                     [batch_size, anchors.shape[0], 1], dtype=rpn_match.dtype)
-#                 batch_rpn_bbox = np.zeros(
-#                     [batch_size, config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4], dtype=rpn_bbox.dtype)
-#                 batch_images = np.zeros(
-#                     (batch_size,) + image[0].shape, dtype=np.float32)
-#                 batch_gt_class_ids = np.zeros(
-#                     (batch_size, config.MAX_GT_INSTANCES), dtype=np.int32)
-#                 batch_gt_boxes = np.zeros(
-#                     (batch_size, config.MAX_GT_INSTANCES, 4), dtype=np.int32)
-#                 batch_gt_masks = np.zeros(
-#                     (batch_size, gt_masks.shape[0], gt_masks.shape[1],
-#                      config.MAX_GT_INSTANCES), dtype=gt_masks.dtype)
-#                 if random_rois:
-#                     batch_rpn_rois = np.zeros(
-#                         (batch_size, rpn_rois.shape[0], 4), dtype=rpn_rois.dtype)
-#                     if detection_targets:
-#                         batch_rois = np.zeros(
-#                             (batch_size,) + rois.shape, dtype=rois.dtype)
-#                         batch_mrcnn_class_ids = np.zeros(
-#                             (batch_size,) + mrcnn_class_ids.shape, dtype=mrcnn_class_ids.dtype)
-#                         batch_mrcnn_bbox = np.zeros(
-#                             (batch_size,) + mrcnn_bbox.shape, dtype=mrcnn_bbox.dtype)
-#                         batch_mrcnn_mask = np.zeros(
-#                             (batch_size,) + mrcnn_mask.shape, dtype=mrcnn_mask.dtype)
-#             # If more instances than fits in the array, sub-sample from them.
-#             if gt_boxes.shape[0] > config.MAX_GT_INSTANCES:
-#                 ids = np.random.choice(
-#                     np.arange(gt_boxes.shape[0]), config.MAX_GT_INSTANCES, replace=False)
-#                 gt_class_ids = gt_class_ids[ids]
-#                 gt_boxes = gt_boxes[ids]
-#                 gt_masks = gt_masks[:, :, ids]
-
-#             # Add to batch
-#             batch_image_meta[b] = image_meta
-#             batch_rpn_match[b] = rpn_match[:, np.newaxis]
-#             batch_rpn_bbox[b] = rpn_bbox
-#             batch_images[b] = mold_image(image[0].astype(np.float32), config)
-#             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
-#             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
-#             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
-#             if random_rois:
-#                 batch_rpn_rois[b] = rpn_rois
-#                 if detection_targets:
-#                     batch_rois[b] = rois
-#                     batch_mrcnn_class_ids[b] = mrcnn_class_ids
-#                     batch_mrcnn_bbox[b] = mrcnn_bbox
-#                     batch_mrcnn_mask[b] = mrcnn_mask
-#             b += 1
-             
-# #             ########## DEBUG
-# #             print("batch_gt_boxes: {}".format(batch_gt_boxes))
-# #             ##########
-
-#             # Batch full?
-#             if b >= batch_size:
-#                 inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
-#                           batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
-#                 outputs = []
-                
-#                 if random_rois:
-#                     inputs.extend([batch_rpn_rois])
-#                     if detection_targets:
-#                         inputs.extend([batch_rois])
-#                         # Keras requires that output and targets have the same number of dimensions
-#                         batch_mrcnn_class_ids = np.expand_dims(
-#                             batch_mrcnn_class_ids, -1)
-#                         outputs.extend(
-#                             [batch_mrcnn_class_ids, batch_mrcnn_bbox, batch_mrcnn_mask])
-
-#                 yield inputs, outputs
-
-#                 # start a new batch
-#                 b = 0
-#         except (GeneratorExit, KeyboardInterrupt):
-#             raise
-#         except:
-#             # Log it and skip the image
-# #             logging.exception("Error processing image {}".format(
-# #                 dataset.image_info[image_id]))
-#             print("Error occured at image_id: {}".format(image_id))
-#             error_count += 1
-#             if error_count > 5:
-#                 raise
-
 
 def data_generator(dataset, config, shuffle=True, augment=False, augmentation=None,
                    random_rois=0, batch_size=1, detection_targets=False,
@@ -1925,9 +2832,12 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
         and masks.
     """
     b = 0  # batch item index
-    image_index = -1
-    image_ids = np.copy(dataset.image_ids)
+    
+    instance_index = -1
+    instance_ids = np.copy(list(dataset.instance_map.keys()))
     error_count = 0
+    if not config.USE_RPN_ROIS:
+        random_rois = config.POST_NMS_ROIS_TRAINING
     no_augmentation_sources = no_augmentation_sources or []
 
     # Anchors
@@ -1943,25 +2853,52 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     while True:
         try:
             # Increment index to pick next image. Shuffle if at the start of an epoch.
-            image_index = (image_index + 1) % len(image_ids)
-            if shuffle and image_index == 0:
-                np.random.shuffle(image_ids)
+            instance_index = (instance_index + 1) % len(instance_ids)
+            if shuffle and instance_index == 0:
+                np.random.shuffle(instance_ids)
 
             # Get GT bounding boxes and masks for image.
-            image_id = image_ids[image_index]
-
+            instance_id = instance_ids[instance_index]
+            image_ids = dataset.load_view(config.NUM_VIEWS, instance=instance_id)
+            # skip instance if it has to few views (return of load_views=None)
+            if not image_ids:
+                continue
+            actual_num_views = len(image_ids)
+            image_id = image_ids[0]
             # If the image source is not to be augmented pass None as augmentation
             if dataset.image_info[image_id]['source'] in no_augmentation_sources:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+                _, image_meta, gt_class_ids, gt_boxes, gt_masks = \
                 load_image_gt(dataset, config, image_id, augment=augment,
                               augmentation=None,
                               use_mini_mask=config.USE_MINI_MASK)
+                image = []
+                Rcam = []
+                for i in range(actual_num_views):
+                    image_t, _, _, _, _ = \
+                    load_image_gt(dataset, config, image_ids[i], augment=augment,
+                                  augmentation=None,
+                                  use_mini_mask=config.USE_MINI_MASK)
+                    image.append(image_t)
+                    Rcam.append(dataset.load_R(image_ids[i]))
+                Kmat = dataset.K
             else:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+                _, image_meta, gt_class_ids, gt_boxes, gt_masks = \
                     load_image_gt(dataset, config, image_id, augment=augment,
                                 augmentation=augmentation,
                                 use_mini_mask=config.USE_MINI_MASK)
-
+                image = []
+                Rcam = []
+                
+                for i in range(actual_num_views):
+                    
+                    image_t, _, _, _, _ = \
+                    load_image_gt(dataset, config, image_ids[i], augment=augment,
+                                augmentation=augmentation,
+                                use_mini_mask=config.USE_MINI_MASK)
+                    image.append(image_t)
+                    Rcam.append(dataset.load_R(image_ids[i]))
+                Kmat = dataset.K
+                
             # Skip images that have no instances. This can happen in cases
             # where we train on a subset of classes and the image doesn't
             # have any of the classes we care about.
@@ -1969,18 +2906,18 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 continue
 
             # RPN Targets
-            rpn_match, rpn_bbox = build_rpn_targets(image.shape, anchors,
+            rpn_match, rpn_bbox = build_rpn_targets(image[0].shape, anchors,
                                                     gt_class_ids, gt_boxes, config)
-
+#             print("image shape in generator: {}".format(image[0].shape))
+            assert np.any(rpn_match), "no rpn_match in generator"
             # Mask R-CNN Targets
             if random_rois:
                 rpn_rois = generate_random_rois(
-                    image.shape, random_rois, gt_class_ids, gt_boxes)
+                    image[0].shape, random_rois, gt_class_ids, gt_boxes)
                 if detection_targets:
                     rois, mrcnn_class_ids, mrcnn_bbox, mrcnn_mask =\
                         build_detection_targets(
                             rpn_rois, gt_class_ids, gt_boxes, gt_masks, config)
-
             # Init batch arrays
             if b == 0:
                 batch_image_meta = np.zeros(
@@ -1990,7 +2927,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 batch_rpn_bbox = np.zeros(
                     [batch_size, config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4], dtype=rpn_bbox.dtype)
                 batch_images = np.zeros(
-                    (batch_size,) + image.shape, dtype=np.float32)
+                    (batch_size, actual_num_views,) + image[0].shape, dtype=np.float32)
                 batch_gt_class_ids = np.zeros(
                     (batch_size, config.MAX_GT_INSTANCES), dtype=np.int32)
                 batch_gt_boxes = np.zeros(
@@ -1998,6 +2935,10 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 batch_gt_masks = np.zeros(
                     (batch_size, gt_masks.shape[0], gt_masks.shape[1],
                      config.MAX_GT_INSTANCES), dtype=gt_masks.dtype)
+                batch_gt_R = np.zeros(
+                    (batch_size, actual_num_views, 3, 4), dtype=np.float32)
+                batch_gt_Kmat = np.zeros(
+                    (batch_size, 3, 3), dtype=np.float32)
                 if random_rois:
                     batch_rpn_rois = np.zeros(
                         (batch_size, rpn_rois.shape[0], 4), dtype=rpn_rois.dtype)
@@ -2010,7 +2951,6 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                             (batch_size,) + mrcnn_bbox.shape, dtype=mrcnn_bbox.dtype)
                         batch_mrcnn_mask = np.zeros(
                             (batch_size,) + mrcnn_mask.shape, dtype=mrcnn_mask.dtype)
-
             # If more instances than fits in the array, sub-sample from them.
             if gt_boxes.shape[0] > config.MAX_GT_INSTANCES:
                 ids = np.random.choice(
@@ -2023,10 +2963,13 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             batch_image_meta[b] = image_meta
             batch_rpn_match[b] = rpn_match[:, np.newaxis]
             batch_rpn_bbox[b] = rpn_bbox
-            batch_images[b] = mold_image(image.astype(np.float32), config)
+            for i in range(actual_num_views):
+                batch_images[b, i] = mold_image(image[i].astype(np.float32), config)
+                batch_gt_R[b,i] = Rcam[i]
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
+            batch_gt_Kmat[b] = Kmat
             if random_rois:
                 batch_rpn_rois[b] = rpn_rois
                 if detection_targets:
@@ -2035,13 +2978,17 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                     batch_mrcnn_bbox[b] = mrcnn_bbox
                     batch_mrcnn_mask[b] = mrcnn_mask
             b += 1
+             
+#             ########## DEBUG
+#             print("batch_gt_boxes: {}".format(batch_gt_boxes))
+#             ##########
 
             # Batch full?
             if b >= batch_size:
                 inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
-                          batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
+                          batch_gt_class_ids, batch_gt_boxes, batch_gt_masks, batch_gt_R, batch_gt_Kmat]
                 outputs = []
-
+                
                 if random_rois:
                     inputs.extend([batch_rpn_rois])
                     if detection_targets:
@@ -2060,8 +3007,9 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             raise
         except:
             # Log it and skip the image
-            logging.exception("Error processing image {}".format(
-                dataset.image_info[image_id]))
+#             logging.exception("Error processing image {}".format(
+#                 dataset.image_info[image_id]))
+            print("Error occured at image_id: {}".format(image_id))
             error_count += 1
             if error_count > 5:
                 raise
@@ -2107,9 +3055,13 @@ class MaskRCNN():
 
         # Inputs
         input_image = KL.Input(
-            shape=[None, None, config.IMAGE_SHAPE[2]], name="input_image")
+            shape=[None, config.IMAGE_SHAPE[0], config.IMAGE_SHAPE[1], config.IMAGE_SHAPE[2]], name="input_image")
         input_image_meta = KL.Input(shape=[config.IMAGE_META_SIZE],
                                     name="input_image_meta")
+        input_R = KL.Input(shape=[None, 3, 4], 
+                              name="input_R")
+        input_Kmat = KL.Input(shape=[3, 3],
+                              name="input_Kmat")
         if mode == "training":
             # RPN GT
             input_rpn_match = KL.Input(
@@ -2127,7 +3079,7 @@ class MaskRCNN():
                 shape=[None, 4], name="input_gt_boxes", dtype=tf.float32)
             # Normalize coordinates
             gt_boxes = KL.Lambda(lambda x: norm_boxes_graph(
-                x, K.shape(input_image)[1:3]))(input_gt_boxes)
+                x, K.shape(input_image)[2:4]))(input_gt_boxes)
             # 3. GT Masks (zero padded)
             # [batch, height, width, MAX_GT_INSTANCES]
             if config.USE_MINI_MASK:
@@ -2142,53 +3094,129 @@ class MaskRCNN():
         elif mode == "inference":
             # Anchors in normalized coordinates
             input_anchors = KL.Input(shape=[None, 4], name="input_anchors")
+        batch_size, num_views, h, w, chn = input_image.get_shape().as_list()
+        num_views = config.NUM_VIEWS
+        input_image_0 = KL.Lambda(lambda x: x[:,0,:,:,:], name="pred_image_selection")(input_image)
 
-        # Build the shared convolutional layers.
-        # Bottom-up Layers
-        # Returns a list of the last layers of each stage, 5 in total.
-        # Don't create the thead (stage 5), so we pick the 4th item in the list.
-        if callable(config.BACKBONE):
-            _, C2, C3, C4, C5 = config.BACKBONE(input_image, stage5=True,
-                                                train_bn=config.TRAIN_BN)
-        else:
-            _, C2, C3, C4, C5 = resnet_graph(input_image, config.BACKBONE,
-                                             stage5=True, train_bn=config.TRAIN_BN)
-        # Top-down Layers
-        # TODO: add assert to varify feature map sizes match what's in config
-        P5 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')(C5)
-        P4 = KL.Add(name="fpn_p4add")([
-            KL.UpSampling2D(size=(2, 2), name="fpn_p5upsampled")(P5),
-            KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')(C4)])
-        P3 = KL.Add(name="fpn_p3add")([
-            KL.UpSampling2D(size=(2, 2), name="fpn_p4upsampled")(P4),
-            KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')(C3)])
-        P2 = KL.Add(name="fpn_p2add")([
-            KL.UpSampling2D(size=(2, 2), name="fpn_p3upsampled")(P3),
-            KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')(C2)])
-        # Attach 3x3 conv to all P layers to get the final feature maps.
-        P2 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p2")(P2)
-        P3 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p3")(P3)
-        P4 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p4")(P4)
-        P5 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p5")(P5)
-        # P6 is used for the 5th anchor scale in RPN. Generated by
-        # subsampling from P5 with stride of 2.
-        P6 = KL.MaxPooling2D(pool_size=(1, 1), strides=2, name="fpn_p6")(P5)
-
-        # Note that P6 is used in RPN, but not in the classifier heads.
-        rpn_feature_maps = [P2, P3, P4, P5, P6]
-        mrcnn_feature_maps = [P2, P3, P4, P5]
+        backbone_model = view_merger_model(input_image_0.get_shape().as_list()[1:], config)
+        
+        P2, P3, P4, P5, P6 = backbone_model(KL.Lambda(lambda x: x[:,0,:,:,:])(input_image))
+        P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)
+        P3 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3)
+        P4 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4)
+        P5 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5)
+        P6 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6)
+        for i in range(1, num_views):
+            P2_t, P3_t, P4_t, P5_t, P6_t = backbone_model(KL.Lambda(lambda x: x[:,i,:,:,:])(input_image))
+            print("finished")
+            P2_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2_t)
+            P3_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3_t)
+            P4_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4_t)
+            P5_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5_t)
+            P6_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6_t)
+            print("P2_t: {}".format(P2_t.get_shape().as_list()))
+            P2 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P2, P2_t])
+            P3 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P3, P3_t])
+            P4 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P4, P4_t])
+            P5 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P5, P5_t])
+            P6 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P6, P6_t])
+        
+        
+        
+        
+        #P2, P3, P4, P5, P6 = view_merger_model(input_image_0.get_shape().as_list()[1:], config)(input_image)
+        
         print("P2_shape: {}".format(P2.get_shape().as_list()))
-        print("P2_type: {}".format(type(P2)))
+#         P2_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_2')(P2)
+#         P3_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_3')(P3)
+#         P4_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_4')(P4)
+#         P5_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_5')(P5)
+#         P6_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_6')(P6)
+        P2_1 = P2
+        P3_1 = P3
+        P4_1 = P4
+        P5_1 = P5
+        P6_1 = P6
+        
+        P2 = KL.Lambda(lambda x: x[:,0,:,:,:])(P2)
+        P3 = KL.Lambda(lambda x: x[:,0,:,:,:])(P3)
+        P4 = KL.Lambda(lambda x: x[:,0,:,:,:])(P4)
+        P5 = KL.Lambda(lambda x: x[:,0,:,:,:])(P5)
+        P6 = KL.Lambda(lambda x: x[:,0,:,:,:])(P6)
+        
+#         # Project feature maps into 3D-Space
+        PG2, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P2")([P2_1, input_R, input_Kmat])
+        PG3, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P3")([P3_1, input_R, input_Kmat])
+        PG4, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P4")([P4_1, input_R, input_Kmat])
+        PG5, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P5")([P5_1, input_R, input_Kmat])
+        PG6, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P6")([P6_1, input_R, input_Kmat])
+        print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
+
+        PG2 = grid_reas(PG2, "grid_reas_P2", config)
+        PG3 = grid_reas(PG3, "grid_reas_P3", config)
+        PG4 = grid_reas(PG4, "grid_reas_P4", config)
+        PG5 = grid_reas(PG5, "grid_reas_P5", config)
+        PG6 = grid_reas(PG6, "grid_reas_P6", config)
+        print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
+        PG2 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=160), name="projs_PG2")([PG2, grid_pos, input_R, input_Kmat])
+        PG3 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=80), name="projs_PG3")([PG3, grid_pos, input_R, input_Kmat])
+        PG4 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=40), name="projs_PG4")([PG4, grid_pos, input_R, input_Kmat])
+        PG5 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=20), name="projs_PG5")([PG5, grid_pos, input_R, input_Kmat])
+        PG6 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=10), name="projs_PG6")([PG6, grid_pos, input_R, input_Kmat])
+        print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
+        
+        PG2 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG2)
+        PG3 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG3)
+        PG4 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG4)
+        PG5 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG5)
+        PG6 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG6)
+        print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
+        
+        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
+        PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
+        PG3 = depth_sampling(PG3, config, name='grid_reas_depth_PG3')
+        PG4 = depth_sampling(PG4, config, name='grid_reas_depth_PG4')
+        PG5 = depth_sampling(PG5, config, name='grid_reas_depth_PG5')
+        PG6 = depth_sampling(PG6, config, name='grid_reas_depth_PG6')
 
 
-        # Anchors
+#         PG2 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG2')(PG2)
+#         PG3 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG3')(PG3)
+#         PG4 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG4')(PG4)
+#         PG5 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG5')(PG5)
+#         PG6 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG6')(PG6)
+#         print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
+        
+        PG2 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG2)
+        PG3 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG3)
+        PG4 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG4)
+        PG5 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG5)
+        PG6 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG6)                         
+
+        if not config.VANILLA:
+            print("recurrent mrcnn")
+            PG2 = KL.Add()([PG2, P2])
+            PG3 = KL.Add()([PG3, P3])
+            PG4 = KL.Add()([PG4, P4])
+            PG5 = KL.Add()([PG5, P5])
+            PG6 = KL.Add()([PG6, P6])
+            
+            rpn_feature_maps = [PG2, PG3, PG4, PG5, PG6]
+            mrcnn_feature_maps = [PG2, PG3, PG4, PG5]
+        else:
+            print("vanilla mrcnn")
+            rpn_feature_maps = [P2, P3, P4, P5, P6]
+            mrcnn_feature_maps = [P2, P3, P4, P5]
+
+            
+                # Anchors
         if mode == "training":
             anchors = self.get_anchors(config.IMAGE_SHAPE)
             # Duplicate across the batch dimension because Keras requires it
             # TODO: can this be optimized to avoid duplicating the anchors?
             anchors = np.broadcast_to(anchors, (config.BATCH_SIZE,) + anchors.shape)
             # A hack to get around Keras's bad support for constants
-            anchors = KL.Lambda(lambda x: tf.Variable(anchors), name="anchors")(input_image)
+            anchors = KL.Lambda(lambda x: tf.Variable(anchors), name="anchors")(input_image_0)
         else:
             anchors = input_anchors
 
@@ -2198,6 +3226,7 @@ class MaskRCNN():
         # Loop through pyramid layers
         layer_outputs = []  # list of lists
         for p in rpn_feature_maps:
+            print(p.get_shape().as_list())
             layer_outputs.append(rpn([p]))
         # Concatenate layer outputs
         # Convert from list of lists of level outputs to list of lists
@@ -2209,7 +3238,6 @@ class MaskRCNN():
                    for o, n in zip(outputs, output_names)]
 
         rpn_class_logits, rpn_class, rpn_bbox = outputs
-
         # Generate proposals
         # Proposals are [batch, N, (y1, x1, y2, x2)] in normalized coordinates
         # and zero padded.
@@ -2231,13 +3259,13 @@ class MaskRCNN():
             if not config.USE_RPN_ROIS:
                 # Ignore predicted ROIs and use ROIs provided as an input.
                 input_rois = KL.Input(shape=[config.POST_NMS_ROIS_TRAINING, 4],
-                                      name="input_roi", dtype=np.int32)
+                                      name="input_roi", dtype=np.float32)
                 # Normalize coordinates
                 target_rois = KL.Lambda(lambda x: norm_boxes_graph(
-                    x, K.shape(input_image)[1:3]))(input_rois)
+                    x, K.shape(input_image_0)[1:3]))(input_rois)
             else:
                 target_rois = rpn_rois
-
+            
             # Generate detection targets
             # Subsamples proposals and generates target outputs for training
             # Note that proposal class IDs, gt_boxes, and gt_masks are zero
@@ -2262,7 +3290,13 @@ class MaskRCNN():
 
             # TODO: clean up (use tf.identify if necessary)
             output_rois = KL.Lambda(lambda x: x * 1, name="output_rois")(rois)
-
+            
+            ########## DEBUG
+#             print_op = tf.print("rpn_class, any(target_class_ids), target_rois, rois:", {1: rpn_class, 2: tf.keras.backend.any(target_class_ids[0]), 3:target_rois, 4: rois})
+#             with tf.control_dependencies([print_op]):
+#                 mrcnn_bbox = KL.Lambda(lambda x: x*1.0)(mrcnn_bbox)
+            ##########
+            
             # Losses
             rpn_class_loss = KL.Lambda(lambda x: rpn_class_loss_graph(*x), name="rpn_class_loss")(
                 [input_rpn_match, rpn_class_logits])
@@ -2277,7 +3311,7 @@ class MaskRCNN():
 
             # Model
             inputs = [input_image, input_image_meta,
-                      input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks]
+                      input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks, input_R, input_Kmat]
             if not config.USE_RPN_ROIS:
                 inputs.append(input_rois)
             outputs = [rpn_class_logits, rpn_class, rpn_bbox,
@@ -2308,9 +3342,9 @@ class MaskRCNN():
                                               config.NUM_CLASSES,
                                               train_bn=config.TRAIN_BN)
 
-            model = KM.Model([input_image, input_image_meta, input_anchors],
+            model = KM.Model([input_image, input_image_meta, input_anchors, input_R, input_Kmat],
                              [detections, mrcnn_class, mrcnn_bbox,
-                                 mrcnn_mask, rpn_rois, rpn_class, rpn_bbox, P2],
+                                 mrcnn_mask, rpn_rois, rpn_class, rpn_bbox, PG2, PG2_intermediate],
                              name='mask_rcnn')
 
         # Add multi-GPU support.
@@ -2376,14 +3410,22 @@ class MaskRCNN():
         # In multi-GPU training, we wrap the model. Get layers
         # of the inner model because they have the weights.
         keras_model = self.keras_model
-        layers = keras_model.inner_model.layers if hasattr(keras_model, "inner_model")\
-            else keras_model.layers
+        if hasattr(keras_model, "inner_model"):
+            layers = keras_model.inner_model.layers
+            print("inner model")
+        else:
+            layers = keras_model.layers
+            print("normal model")
+#         layers = keras_model.inner_model.layers if hasattr(keras_model, "inner_model")\
+#             else keras_model.layers
 
         # Exclude some layers
         if exclude:
-            layers = filter(lambda l: l.name not in exclude, layers)
-
+            layers = list(filter(lambda l: l.name not in exclude, layers))
+        for layer in layers:
+            print(layer.name)
         if by_name:
+            print("load_weights_from_hdf5_group_by_name")
             saving.load_weights_from_hdf5_group_by_name(f, layers)
         else:
             saving.load_weights_from_hdf5_group(f, layers)
@@ -2415,6 +3457,9 @@ class MaskRCNN():
         optimizer = keras.optimizers.SGD(
             lr=learning_rate, momentum=momentum,
             clipnorm=self.config.GRADIENT_CLIP_NORM)
+#         optimizer = keras.optimizers.Adam(
+#             lr=learning_rate,
+#             clipnorm=self.config.GRADIENT_CLIP_NORM)
         # Add Losses
         # First, clear previously set losses to avoid duplication
         self.keras_model._losses = []
@@ -2477,6 +3522,7 @@ class MaskRCNN():
                 self.set_trainable(
                     layer_regex, keras_model=layer, indent=indent + 4)
                 continue
+            
 
             if not layer.weights:
                 continue
@@ -2570,10 +3616,13 @@ class MaskRCNN():
         layer_regex = {
             # all layers but the backbone
             "heads": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
+            "grid+": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
+            "grid+-": r"(mrcnn\_.*)|(rpn\_.*)|(grid_reas\_.*)",
+            "grid_only": r"(grid_reas\_.*)",
             # From a specific Resnet stage and up
-            "3+": r"(res3.*)|(bn3.*)|(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
-            "4+": r"(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
-            "5+": r"(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
+            "3+": r"(res3.*)|(bn3.*)|(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
+            "4+": r"(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
+            "5+": r"(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
             # All layers
             "all": ".*",
         }
@@ -2591,13 +3640,24 @@ class MaskRCNN():
         # Create log_dir if it does not exist
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
-
+            
+        class Save_BB_Callback(keras.callbacks.Callback):
+            def __init__(self, model, log_dir):
+                self.model = model
+                self.log_dir = log_dir
+            def on_epoch_end(self, epoch, logs=None):
+                for layer in self.model.layers:
+                    if layer.name == 'backbone':
+                        layer.save_weights(self.log_dir + '/backbone_callb_epoch_{:04d}.h5'.format(epoch+1))
+                        break
+        save_callback = Save_BB_Callback(self.keras_model, self.log_dir)
         # Callbacks
         callbacks = [
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
                                             verbose=0, save_weights_only=True),
+            save_callback
         ]
 
         # Add custom callbacks to the list
@@ -2736,7 +3796,7 @@ class MaskRCNN():
 
         return boxes, class_ids, scores, full_masks
 
-    def detect(self, images, verbose=0):
+    def detect(self, images, Rcam, Kmat, verbose=0):
         """Runs the detection pipeline.
 
         images: List of images, potentially of different sizes.
@@ -2757,14 +3817,19 @@ class MaskRCNN():
                 log("image", image)
 
         # Mold inputs to format expected by the neural network
-        molded_images, image_metas, windows = self.mold_inputs(images)
-
+        molded_images = []
+        
+        for i in range(self.config.BATCH_SIZE):
+            molded_images_t, image_metas, windows = self.mold_inputs(images[i])
+            molded_images.append(molded_images_t)
+        molded_images = np.stack(molded_images)
         # Validate image sizes
         # All images in a batch MUST be of the same size
-        image_shape = molded_images[0].shape
-        for g in molded_images[1:]:
-            assert g.shape == image_shape,\
-                "After resizing, all images must have the same size. Check IMAGE_RESIZE_MODE and image sizes."
+        image_shape = molded_images_t[0].shape
+        for g in molded_images:
+            for g_view in g:
+                assert g_view.shape == image_shape,\
+                    "After resizing, all images must have the same size. Check IMAGE_RESIZE_MODE and image sizes."
 
         # Anchors
         anchors = self.get_anchors(image_shape)
@@ -2776,22 +3841,25 @@ class MaskRCNN():
             log("molded_images", molded_images)
             log("image_metas", image_metas)
             log("anchors", anchors)
+            log("Rcam", Rcam)
+            log("Kmat", Kmat)
         # Run object detection
-        detections, _, _, mrcnn_mask, _, _, _, P2 =\
-            self.keras_model.predict([molded_images, image_metas, anchors], verbose=0)
+        detections, _, _, mrcnn_mask, _, _, _, mrcnn_features, mrcnn_intermediate_features =\
+            self.keras_model.predict([molded_images, image_metas, anchors, Rcam, Kmat], verbose=0)
         # Process detections
         results = []
         for i, image in enumerate(images):
             final_rois, final_class_ids, final_scores, final_masks =\
                 self.unmold_detections(detections[i], mrcnn_mask[i],
-                                       image.shape, molded_images[i].shape,
+                                       image[0].shape, molded_images[0][i].shape,
                                        windows[i])
             results.append({
                 "rois": final_rois,
                 "class_ids": final_class_ids,
                 "scores": final_scores,
                 "masks": final_masks,
-                "P2": P2[i]
+                "mrcnn_features": mrcnn_features[i],
+                "mrcnn_intermediate_features": mrcnn_intermediate_features[i]
             })
         return results
 
@@ -2924,7 +3992,7 @@ class MaskRCNN():
                 layers.append(l)
         return layers
 
-    def run_graph(self, images, outputs, image_metas=None):
+    def run_graph(self, images, Rcam, Kmat, outputs, image_metas=None):
         """Runs a sub-set of the computation graph that computes the given
         outputs.
 
@@ -2942,6 +4010,7 @@ class MaskRCNN():
         # Organize desired outputs into an ordered dict
         outputs = OrderedDict(outputs)
         for o in outputs.values():
+            print(o)
             assert o is not None
 
         # Build a Keras function to run parts of the computation graph
@@ -2952,17 +4021,25 @@ class MaskRCNN():
 
         # Prepare inputs
         if image_metas is None:
-            molded_images, image_metas, _ = self.mold_inputs(images)
+            molded_images = []
+            for i in range(self.config.BATCH_SIZE):
+                molded_images_t, image_metas, windows = self.mold_inputs(images[i])
+                molded_images.append(molded_images_t)
+            molded_images = np.stack(molded_images)
         else:
             molded_images = images
+            
+        
+        
         image_shape = molded_images[0].shape
         # Anchors
         anchors = self.get_anchors(image_shape)
         # Duplicate across the batch dimension because Keras requires it
         # TODO: can this be optimized to avoid duplicating the anchors?
         anchors = np.broadcast_to(anchors, (self.config.BATCH_SIZE,) + anchors.shape)
-        model_in = [molded_images, image_metas, anchors]
-
+        model_in = [molded_images, Rcam, Kmat, image_metas, anchors]
+        for model_input in model_in:
+            print(model_input.shape)
         # Run inference
         if model.uses_learning_phase and not isinstance(K.learning_phase(), int):
             model_in.append(0.)
@@ -3103,6 +4180,7 @@ def norm_boxes_graph(boxes, shape):
     Returns:
         [..., (y1, x1, y2, x2)] in normalized coordinates
     """
+    print("shape_norm_boxes_graph: {}".format(shape))
     h, w = tf.split(tf.cast(shape, tf.float32), 2)
     scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)
     shift = tf.constant([0., 0., 1., 1.])

@@ -405,24 +405,82 @@ def convlstm(grid, name, kernel=(3, 3, 3), filters=32):
 ############################################################
 #  Attention Layers
 ############################################################
-def get_angles(pos, i, d_model):
-    angle_rates = 1 / tf.math.pow(10000, (2 * (i//2)) / tf.float32(d_model))
+def get_angles(pos, i, num_pos_feats):
+    angle_rates = 1. / tf.math.pow(10000., (2. * (tf.cast(i, dtype=tf.float32) // 2.)) / tf.cast(num_pos_feats, dtype=tf.float32))
     return pos * angle_rates
 
 
-def positional_encoding(position, d_model):
-    angle_rads = get_angles(position[..., tf.newaxis],
-                          tf.arange(d_model)[tf.newaxis, ...],
-                          d_model)
-  
+def positional_encoding(positions, d_model):
+    """computes the positional encoding for all axes
+    positions: batch_size, im_bs, depth_samples, 3(x,y,z), npix
+    pos_encoding: batch_size, npix*depth_samples flattened in order x, y, z, d_model
+    """
+
+    assert d_model % 3 == 0, "The depth of the model must be divisible by 3."
+    num_pos_feats = d_model // 3
+
+    # reshape positions to batch_size, 3(x,y,z), N*im_bs
+    positions_shape = tf.shape(positions)
+    positions = tf.transpose(positions, [0, 1, 2, 4, 3])
+    positions = tf.reshape(positions, [-1, 3])
+    x_embed, y_embed, z_embed = tf.meshgrid(positions[:, 0],
+                                            positions[:, 1],
+                                            positions[:, 2])
+    print("shape of x_embed: {}".format(x_embed.get_shape().as_list()))
+    grid_size = positions_shape[1]*positions_shape[2]*positions_shape[4]
+    x_embed = tf.reshape(x_embed, [positions_shape[0], grid_size, grid_size, grid_size])
+    y_embed = tf.reshape(y_embed, [positions_shape[0], grid_size, grid_size, grid_size])
+    z_embed = tf.reshape(z_embed, [positions_shape[0], grid_size, grid_size, grid_size])
+    print("shape of x_embed: {}".format(x_embed.get_shape().as_list()))
+    angle_rads_x = get_angles(x_embed[..., tf.newaxis],
+                              tf.range(num_pos_feats)[tf.newaxis, ...],
+                              num_pos_feats)
+    angle_rads_y = get_angles(y_embed[..., tf.newaxis],
+                              tf.range(num_pos_feats)[tf.newaxis, ...],
+                              num_pos_feats)
+    angle_rads_z = get_angles(z_embed[..., tf.newaxis],
+                              tf.range(num_pos_feats)[tf.newaxis, ...],
+                              num_pos_feats)
+    print("shape of angle_rads: {}".format(angle_rads_z.get_shape().as_list()))
     # apply sin to even indices in the array; 2i
-    angle_rads[..., 0::2] = tf.math.sin(angle_rads[..., 0::2])
+    angle_rads_x = tf.stack([tf.math.sin(angle_rads_x[..., 0::2]),
+                            tf.math.cos(angle_rads_x[..., 1::2])], axis=5)
+    print("shape of angle_rads: {}".format(angle_rads_x.get_shape().as_list()))
+    angle_rads_x = tf.reshape(angle_rads_x, (tf.shape(angle_rads_x)[0],
+                                             tf.shape(angle_rads_x)[1],
+                                             tf.shape(angle_rads_x)[2],
+                                             tf.shape(angle_rads_x)[3],
+                                             -1))
+    angle_rads_y = tf.stack([tf.math.sin(angle_rads_y[..., 0::2]),
+                            tf.math.cos(angle_rads_y[..., 1::2])], axis=5)
+    angle_rads_y = tf.reshape(angle_rads_y, (tf.shape(angle_rads_y)[0],
+                                             tf.shape(angle_rads_y)[1],
+                                             tf.shape(angle_rads_y)[2],
+                                             tf.shape(angle_rads_y)[3],
+                                             -1))
+    angle_rads_z = tf.stack([tf.math.sin(angle_rads_z[..., 0::2]),
+                            tf.math.cos(angle_rads_z[..., 1::2])], axis=5)
+    angle_rads_z = tf.reshape(angle_rads_z, (tf.shape(angle_rads_z)[0],
+                                             tf.shape(angle_rads_z)[1],
+                                             tf.shape(angle_rads_z)[2],
+                                             tf.shape(angle_rads_z)[3],
+                                             -1))
+    print("shape of angle_rads: {}".format(angle_rads_z.get_shape().as_list()))
+    # angle_rads_x[..., 0::2] = tf.math.sin(angle_rads_x[..., 0::2])
+    # angle_rads_y[..., 0::2] = tf.math.sin(angle_rads_y[..., 0::2])
+    # angle_rads_z[..., 0::2] = tf.math.sin(angle_rads_z[..., 0::2])
+    #
+    # # apply cos to odd indices in the array; 2i+1
+    # angle_rads_x[..., 1::2] = tf.math.cos(angle_rads_x[..., 1::2])
+    # angle_rads_y[..., 1::2] = tf.math.cos(angle_rads_y[..., 1::2])
+    # angle_rads_z[..., 1::2] = tf.math.cos(angle_rads_z[..., 1::2])
 
-    # apply cos to odd indices in the array; 2i+1
-    angle_rads[..., 1::2] = tf.math.cos(angle_rads[..., 1::2])
-
-    pos_encoding = angle_rads[tf.newaxis, ...]
-
+    pos_encoding = tf.concat([angle_rads_x, angle_rads_y, angle_rads_z], axis=4)
+    # flatten into 1D
+    pos_encoding = tf.transpose(pos_encoding, [0, 4, 1, 2, 3])
+    pos_encoding = tf.reshape(pos_encoding, [tf.shape(pos_encoding)[0], tf.shape(pos_encoding)[1], -1])
+    pos_encoding = tf.transpose(pos_encoding, [0, 2, 1])
+    print("pos_encoding: {}".format(pos_encoding.get_shape().as_list()))
     return pos_encoding
 
 
@@ -433,18 +491,19 @@ def create_padding_mask(seq):
     # to the attention logits.
     return seq[:, tf.newaxis, tf.newaxis, :]  # (batch_size, 1, 1, seq_len)
 
+
 def scaled_dot_product_attention(q, k, v, mask):
     """Calculate the attention weights.
     q, k, v must have matching leading dimensions.
     k, v must have matching penultimate dimension, i.e.: seq_len_k = seq_len_v.
-    The mask has different shapes depending on its type(padding or look ahead) 
+    The mask has different shapes depending on its type(padding or look ahead)
     but it must be broadcastable for addition.
 
     Args:
     q: query shape == (..., seq_len_q, depth)
     k: key shape == (..., seq_len_k, depth)
     v: value shape == (..., seq_len_v, depth_v)
-    mask: Float tensor with shape broadcastable 
+    mask: Float tensor with shape broadcastable
           to (..., seq_len_q, seq_len_k). Defaults to None.
 
     Returns:
@@ -459,9 +518,9 @@ def scaled_dot_product_attention(q, k, v, mask):
 
     # add the mask to the scaled tensor.
     if mask is not None:
-        scaled_attention_logits += (mask * -1e9)  
+        scaled_attention_logits += (mask * -1e9)
 
-    # softmax is normalized on the last axis (seq_len_k) so that the scores
+        # softmax is normalized on the last axis (seq_len_k) so that the scores
     # add up to 1.
     attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)  # (..., seq_len_q, seq_len_k)
 
@@ -493,9 +552,10 @@ class MultiHeadAttention(KL.Layer):
         x = tf.reshape(x, (batch_size, -1, self.num_heads, self.depth))
         return tf.transpose(x, perm=[0, 2, 1, 3])
 
-    def call(self, v, k, q, mask):
+    def call(self, inputs, mask):
+        v, k, q = inputs
         batch_size = tf.shape(q)[0]
-
+        print("shape q: {}".format(q.get_shape().as_list()))
         q = self.wq(q)  # (batch_size, seq_len, d_model)
         k = self.wk(k)  # (batch_size, seq_len, d_model)
         v = self.wv(v)  # (batch_size, seq_len, d_model)
@@ -509,20 +569,21 @@ class MultiHeadAttention(KL.Layer):
         scaled_attention, attention_weights = scaled_dot_product_attention(
             q, k, v, mask)
 
-        scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3])  # (batch_size, seq_len_q, num_heads, depth)
+        scaled_attention = tf.transpose(scaled_attention,
+                                        perm=[0, 2, 1, 3])  # (batch_size, seq_len_q, num_heads, depth)
 
-        concat_attention = tf.reshape(scaled_attention, 
+        concat_attention = tf.reshape(scaled_attention,
                                       (batch_size, -1, self.d_model))  # (batch_size, seq_len_q, d_model)
 
         output = self.dense(concat_attention)  # (batch_size, seq_len_q, d_model)
 
-        return output, attention_weights
-    
-    
+        return output
+
+
 def point_wise_feed_forward_network(d_model, dff):
     return keras.Sequential([
-      KL.Dense(dff, activation='relu'),  # (batch_size, seq_len, dff)
-      KL.Dense(d_model)  # (batch_size, seq_len, d_model)
+        KL.Dense(dff, activation='relu'),  # (batch_size, seq_len, dff)
+        KL.Dense(d_model)  # (batch_size, seq_len, d_model)
     ])
 
 
@@ -533,15 +594,14 @@ class EncoderLayer(KL.Layer):
         self.mha = MultiHeadAttention(d_model, num_heads)
         self.ffn = point_wise_feed_forward_network(d_model, dff)
 
-        self.layernorm1 = KL.LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = KL.LayerNormalization(epsilon=1e-6)
+        self.layernorm1 = utils.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = utils.LayerNormalization(epsilon=1e-6)
 
-        self.dropout1 = KL.Dropout(rate)
-        self.dropout2 = KL.Dropout(rate)
-    
+        self.dropout1 = KL.Dropout(rate=rate)
+        self.dropout2 = KL.Dropout(rate=rate)
+
     def call(self, x, training, mask):
-
-        attn_output, _ = self.mha(x, x, x, mask)  # (batch_size, input_seq_len, d_model)
+        attn_output = self.mha([x, x, x], mask=mask)  # (batch_size, input_seq_len, d_model)
         attn_output = self.dropout1(attn_output, training=training)
         out1 = self.layernorm1(x + attn_output)  # (batch_size, input_seq_len, d_model)
 
@@ -550,7 +610,8 @@ class EncoderLayer(KL.Layer):
         out2 = self.layernorm2(out1 + ffn_output)  # (batch_size, input_seq_len, d_model)
 
         return out2
-    
+
+
 class Encoder(KL.Layer):
     def __init__(self, num_layers, d_model, num_heads, dff,
                  rate=0.1):
@@ -559,56 +620,56 @@ class Encoder(KL.Layer):
         self.d_model = d_model
         self.num_layers = num_layers
 
-#         self.pos_encoding = positional_encoding(maximum_position_encoding, 
-#                                                 self.d_model)
-
-
-        self.enc_layers = [EncoderLayer(d_model, num_heads, dff, rate) 
+        self.enc_layers = [EncoderLayer(d_model, num_heads, dff, rate)
                            for _ in range(num_layers)]
 
-        self.dropout = KL.Dropout(rate)
-        
-    def call(self, x, training, mask):
+        self.dropout = KL.Dropout(rate=rate)
 
-        seq_len = tf.shape(x)[1]
-
+    def call(self, inputs, training, mask):
+        x, positions = inputs
+        pos_encoding = positional_encoding(positions, self.d_model)
         # adding embedding and position encoding.
         x *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))
-        x += self.pos_encoding[:, :seq_len, :]
+        x += pos_encoding
 
         x = self.dropout(x, training=training)
 
         for i in range(self.num_layers):
-            x = self.enc_layers[i](x, training, mask)
+            x = self.enc_layers[i](x, training=training, mask=mask)
 
         return x  # (batch_size, input_seq_len, d_model)
 
 
 class Transformer(KM.Model):
-    def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size, 
-               target_vocab_size, pe_input, pe_target, rate=0.1):
+    def __init__(self, num_layers, d_model, num_heads, dff,
+                 target_size, rate=0.1):
         super(Transformer, self).__init__()
 
-        self.encoder = Encoder(num_layers, d_model, num_heads, dff, 
-                               input_vocab_size, pe_input, rate)
+        self.encoder = Encoder(num_layers, d_model, num_heads, dff,
+                               rate)
 
-        self.decoder = Decoder(num_layers, d_model, num_heads, dff, 
-                               target_vocab_size, pe_target, rate)
+        self.final_layer = KL.Dense(target_size)
 
-        self.final_layer = KL.Dense(target_vocab_size)
+    def call(self, inputs, training, mask):
+        inp, positions = inputs
+        enc_output = self.encoder([inp, positions], training=training, mask=mask)  # (batch_size, inp_seq_len, d_model)
+        enc_output = tf.transpose(enc_output, [0, 2, 1])
 
-    def call(self, inp, tar, training, enc_padding_mask, 
-             look_ahead_mask, dec_padding_mask):
+        final_output = self.final_layer(enc_output)  # (batch_size, tar_seq_len, target_vocab_size)
+        final_output = tf.tranpose(final_output, [0, 2, 1])
+        return final_output
 
-        enc_output = self.encoder(inp, training, enc_padding_mask)  # (batch_size, inp_seq_len, d_model)
 
-        # dec_output.shape == (batch_size, tar_seq_len, d_model)
-        dec_output, attention_weights = self.decoder(
-            tar, enc_output, training, look_ahead_mask, dec_padding_mask)
+def transformer_encoder(feats, Rcam, Kmat, config, training, mask=None):
+    positions = unproj_vector([feats, Rcam, Kmat], config)
+    feats = tf.reshape(feats, [tf.shape(feats)[0], -1])
+    print("shape pos, feats: {}, {}".format(positions.get_shape().as_list(), feats.get_shape().as_list()))
+    # if not mask:
+    #     mask = tf.zeros(tf.shape(feats))
+    transformer = Transformer(num_layers=6, d_model=72, num_heads=8, dff=256, target_size=400, rate=0.1)
+    feats = transformer([feats, positions], training=training, mask=mask)
+    return feats
 
-        final_output = self.final_layer(dec_output)  # (batch_size, tar_seq_len, target_vocab_size)
-
-        return final_output, attention_weights    
 
 ############################################################
 #  Projective Geometry Layers
@@ -616,16 +677,20 @@ class Transformer(KM.Model):
 def unproj_vector(inputs, config):
     feats, Rcam, Kmat = inputs
     bs, im_bs, fh, fw, fdim = feats.get_shape().as_list()
-
-    Rcam = collapse_dims(Rcam)
-    Kmat = collapse_dims(Kmat)
-    feats = collapse_dims(feats)
-    # resize Kmat because original image plane had other dimension 
-    #than the one of the feature map
-    assert fh == fw, "The height and width of the feature map are not matching {} and {}".format(fh, fw) 
+    print("feats shape: {}".format(feats.get_shape().as_list()))
+    #im_bs = tf.shape(feats)[1]
+    bs = config.BATCH_SIZE
+    #Rcam = collapse_dims(Rcam)
+    print("Kmat shape: {}".format(Kmat.get_shape().as_list()))
+    Kmat = repeat_tensor_tf(Kmat, im_bs, rep_dim=1)
+    print("Kmat shape: {}".format(Kmat.get_shape().as_list()))
+    print("Rcam shape: {}".format(Rcam.get_shape().as_list()))
+    # resize Kmat because original image plane had other dimension
+    # than the one of the feature map
+    assert fh == fw, "The height and width of the feature map are not matching {} and {}".format(fh, fw)
     rsz_factor = float(fh) / config.IMAGE_SHAPE[0]
     Kmat = Kmat * rsz_factor
-    
+
     im_range = tf.range(0.5, fh, 1)
     npix = fh * fh
     image_indices = tf.stack(tf.meshgrid(im_range, im_range))
@@ -636,24 +701,28 @@ def unproj_vector(inputs, config):
         [image_indices, tf.ones((1, npix))], axis=0)
     image_indices = tf.reshape(image_indices, [1, 1, 3, npix])
     image_indices = tf.tile(image_indices, [bs, im_bs, 1, 1])
-
-    camera_coordinates = tf.matrix_triangular_solve(Kmat, image_indices)
+    print("image_indices shape: {}".format(image_indices.get_shape().as_list()))
+    print("Kmat shape: {}".format(Kmat.get_shape().as_list()))
+    camera_coordinates = tf.matrix_triangular_solve(Kmat, image_indices, lower=False,)
     # sample from different depths
     camera_coordinates = repeat_tensor(camera_coordinates, config.samples, rep_dim=2)
     rho = tf.linspace(config.min_z, config.max_z, config.samples)
     camera_coordinates = camera_coordinates * rho[tf.newaxis, tf.newaxis, :, tf.newaxis,
-                                tf.newaxis]
-
+                                              tf.newaxis]
+    camera_coordinates = tf.reshape(camera_coordinates, [bs, im_bs, config.samples, 3, npix])
+    print("camera_coordinates shape: {}".format(camera_coordinates.get_shape().as_list()))
     camera_coordinates = tf.concat(
-                [camera_coordinates, tf.ones([bs, im_bs, config.samples, 1, npix])],
-                axis=-2)    
+        [camera_coordinates, tf.ones([bs, im_bs, config.samples, 1, npix])],
+        axis=-2)
     # dimensions are now: bs, im_bs, different_depths, 4(x,y,z,1), npix
-
+    print("camera_coordinates shape: {}".format(camera_coordinates.get_shape().as_list()))
+    #camera_coordinates = collapse_dims(camera_coordinates)
     Rcam = repeat_tensor(Rcam, config.samples, rep_dim=2)
     world_coordinates = tf.matmul(Rcam, camera_coordinates)
+    world_coordinates = tf.reshape(world_coordinates, [bs, im_bs, config.samples, 3, npix])
+    print("world_coordinates shape: {}".format(world_coordinates.get_shape().as_list()))
     # dimensions are now: bs, im_bs, different_depths, 3(x,y,z), npix
     return world_coordinates
-
 
 def unproj_feat(inputs, config):
     feats, Rcam, Kmat = inputs
@@ -847,12 +916,12 @@ def proj_grid(inputs, config, proj_size):
             return ray_slices
 
             
-# def repeat_tensor(T, nrep, rep_dim=1):
-#         repT = tf.expand_dims(T, rep_dim)
-#         tile_dim = [1] * len(tf_static_shape(repT))
-#         tile_dim[rep_dim] = nrep
-#         repT = tf.tile(repT, tile_dim)
-#         return repT
+def repeat_tensor_tf(T, nrep, rep_dim=1):
+        repT = tf.expand_dims(T, rep_dim)
+        tile_dim = [1] * len(tf_static_shape(repT))
+        tile_dim[rep_dim] = nrep
+        repT = tf.tile(repT, tile_dim)
+        return repT
 
 def repeat_tensor(T, nrep, rep_dim=1):
         repT = tf.expand_dims(T, rep_dim)
@@ -1117,55 +1186,43 @@ def conv_block(input_tensor, kernel_size, filters, stage, block,
     x = KL.Activation('relu')(x)
     return x
 
-def resnet_stage1(input_shape, train_bn=True):
-    # Stage 1
-    input_image = KL.Input(shape=input_shape)
-    x = KL.ZeroPadding2D((3, 3))(input_image)
-    x = KL.Conv2D(64, (7, 7), strides=(2, 2), name='conv1', use_bias=True)(x)
-    x = BatchNorm(name='bn_conv1')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
-    C1 = x = KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same")(x)
-    model = KM.Model(input_image, C1, name='resnet_stage1')
-    return model
+# def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
+#     """Build a ResNet graph.
+#         architecture: Can be resnet50 or resnet101
+#         stage5: Boolean. If False, stage5 of the network is not created
+#         train_bn: Boolean. Train or freeze Batch Norm layers
+#     """
+#     assert architecture in ["resnet50", "resnet101"]
+#     # Stage 1
+#     x = KL.TimeDistributed(KL.ZeroPadding2D((3, 3)))(input_image)
+#     x = KL.TimeDistributed(KL.Conv2D(64, (7, 7), strides=(2, 2), use_bias=True), name='conv1')(x)
+#     x = KL.TimeDistributed(BatchNorm(), name='bn_conv1')(x, training=train_bn)
+#     x = KL.Activation('relu')(x)
+#     C1 = x = KL.TimeDistributed(KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same"))(x)
+#     # Stage 2
+#     x = conv_block(x, 3, [32, 32, 128], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
+#     x = identity_block(x, 3, [32, 32, 128], stage=2, block='b', train_bn=train_bn)
+#     C2 = x = identity_block(x, 3, [32, 32, 128], stage=2, block='c', train_bn=train_bn)
+#     # Stage 3
+#     x = conv_block(x, 3, [64, 64, 128], stage=3, block='a', train_bn=train_bn)
+#     x = identity_block(x, 3, [64, 64, 128], stage=3, block='b', train_bn=train_bn)
+#     x = identity_block(x, 3, [64, 64, 128], stage=3, block='c', train_bn=train_bn)
+#     C3 = x = identity_block(x, 3, [64, 64, 128], stage=3, block='d', train_bn=train_bn)
+#     # Stage 4
+#     x = conv_block(x, 3, [64, 64, 256], stage=4, block='a', train_bn=train_bn)
+#     block_count = {"resnet50": 3, "resnet101": 22}[architecture]
+#     for i in range(block_count):
+#         x = identity_block(x, 3, [128, 128, 256], stage=4, block=chr(98 + i), train_bn=train_bn)
+#     C4 = x
+#     # Stage 5
+#     if stage5:
+#         x = conv_block(x, 3, [128, 128, 256], stage=5, block='a', train_bn=train_bn)
+#         x = identity_block(x, 3, [128, 128, 256], stage=5, block='b', train_bn=train_bn)
+#         C5 = x = identity_block(x, 3, [128, 128, 256], stage=5, block='c', train_bn=train_bn)
+#     else:
+#         C5 = None
+#     return [C1, C2, C3, C4, C5]
 
-def resnet_stage2(input_shape, train_bn=True):
-    # Stage 2
-    input_image = KL.Input(shape=input_shape)
-    x = conv_block(x, 3, [32, 32, 128], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
-    x = identity_block(x, 3, [32, 32, 128], stage=2, block='b', train_bn=train_bn)
-    C2 = x = identity_block(x, 3, [32, 32, 128], stage=2, block='c', train_bn=train_bn)
-    model = KM.Model(input_image, C2, name='resnet_stage2')
-    return model
-
-def resnet_stage3(input_shape, train_bn=True):
-    # Stage 3
-    input_image = KL.Input(shape=input_shape)
-    x = conv_block(x, 3, [64, 64, 128], stage=3, block='a', train_bn=train_bn)
-    x = identity_block(x, 3, [64, 64, 128], stage=3, block='b', train_bn=train_bn)
-    x = identity_block(x, 3, [64, 64, 128], stage=3, block='c', train_bn=train_bn)
-    C3 = x = identity_block(x, 3, [64, 64, 128], stage=3, block='d', train_bn=train_bn)
-    model = KM.Model(input_image, C3, name='resnet_stage3')
-    return model
-
-def resnet_stage4(input_shape, architecture, train_bn=True):
-    input_image = KL.Input(shape=input_shape)
-    assert architecture in ["resnet50", "resnet101"]
-    x = conv_block(x, 3, [64, 64, 256], stage=4, block='a', train_bn=train_bn)
-    block_count = {"resnet50": 3, "resnet101": 22}[architecture]
-    for i in range(block_count):
-        x = identity_block(x, 3, [128, 128, 256], stage=4, block=chr(98 + i), train_bn=train_bn)
-    C4 = x
-    model = KM.Model(input_image, C4, name='resnet_stage4')
-    return model
-
-def resnet_stage5(input_shape, train_bn):
-    input_image = KL.Input(shape=input_shape)
-    x = conv_block(x, 3, [128, 128, 256], stage=5, block='a', train_bn=train_bn)
-    x = identity_block(x, 3, [128, 128, 256], stage=5, block='b', train_bn=train_bn)
-    C5 = x = identity_block(x, 3, [128, 128, 256], stage=5, block='c', train_bn=train_bn)
-    model = KM.Model(input_image, C5, name='resnet_stage5')
-    return model
-    
 
 def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
     """Build a ResNet graph.
@@ -1176,71 +1233,33 @@ def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
     assert architecture in ["resnet50", "resnet101"]
     # Stage 1
     x = KL.TimeDistributed(KL.ZeroPadding2D((3, 3)))(input_image)
-    x = KL.TimeDistributed(KL.Conv2D(64, (7, 7), strides=(2, 2), use_bias=True), name='conv1')(x)
-    x = KL.TimeDistributed(BatchNorm(), name='bn_conv1')(x, training=train_bn)
+    x = add_conv_layer(x, scope='res1', filters=64, kernel_size=(7, 7), strides=(2, 2), name='conv1', use_bias=True)
+    x = add_bn_layer(name='bn_conv1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
-    C1 = x = KL.TimeDistributed(KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same"))(x)
+    C1 = x = KL.TimeDistributed(KL.MaxPool2D((3, 3), strides=(2, 2), padding="same"))(x)
     # Stage 2
-    x = conv_block(x, 3, [32, 32, 128], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
-    x = identity_block(x, 3, [32, 32, 128], stage=2, block='b', train_bn=train_bn)
-    C2 = x = identity_block(x, 3, [32, 32, 128], stage=2, block='c', train_bn=train_bn)
+    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
+    x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', train_bn=train_bn)
+    C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', train_bn=train_bn)
     # Stage 3
-    x = conv_block(x, 3, [64, 64, 128], stage=3, block='a', train_bn=train_bn)
-    x = identity_block(x, 3, [64, 64, 128], stage=3, block='b', train_bn=train_bn)
-    x = identity_block(x, 3, [64, 64, 128], stage=3, block='c', train_bn=train_bn)
-    C3 = x = identity_block(x, 3, [64, 64, 128], stage=3, block='d', train_bn=train_bn)
+    x = conv_block(x, 3, [128, 128, 512], stage=3, block='a', train_bn=train_bn)
+    x = identity_block(x, 3, [128, 128, 512], stage=3, block='b', train_bn=train_bn)
+    x = identity_block(x, 3, [128, 128, 512], stage=3, block='c', train_bn=train_bn)
+    C3 = x = identity_block(x, 3, [128, 128, 512], stage=3, block='d', train_bn=train_bn)
     # Stage 4
-    x = conv_block(x, 3, [64, 64, 256], stage=4, block='a', train_bn=train_bn)
-    block_count = {"resnet50": 3, "resnet101": 22}[architecture]
+    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a', train_bn=train_bn)
+    block_count = {"resnet50": 5, "resnet101": 22}[architecture]
     for i in range(block_count):
-        x = identity_block(x, 3, [128, 128, 256], stage=4, block=chr(98 + i), train_bn=train_bn)
+        x = identity_block(x, 3, [256, 256, 1024], stage=4, block=chr(98 + i), train_bn=train_bn)
     C4 = x
     # Stage 5
     if stage5:
-        x = conv_block(x, 3, [128, 128, 256], stage=5, block='a', train_bn=train_bn)
-        x = identity_block(x, 3, [128, 128, 256], stage=5, block='b', train_bn=train_bn)
-        C5 = x = identity_block(x, 3, [128, 128, 256], stage=5, block='c', train_bn=train_bn)
+        x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a', train_bn=train_bn)
+        x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b', train_bn=train_bn)
+        C5 = x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c', train_bn=train_bn)
     else:
         C5 = None
     return [C1, C2, C3, C4, C5]
-
-
-# def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
-#     """Build a ResNet graph.
-#         architecture: Can be resnet50 or resnet101
-#         stage5: Boolean. If False, stage5 of the network is not created
-#         train_bn: Boolean. Train or freeze Batch Norm layers
-#     """
-#     assert architecture in ["resnet50", "resnet101"]
-#     # Stage 1
-#     x = KL.ZeroPadding2D((3, 3))(input_image)
-#     x = add_conv_layer(x, scope='res1', filters=64, kernel_size=(7, 7), strides=(2, 2), name='conv1', use_bias=True)
-#     x = add_bn_layer(name='bn_conv1')(x, training=train_bn)
-#     x = KL.Activation('relu')(x)
-#     C1 = x = KL.MaxPool2D((3, 3), strides=(2, 2), padding="same")(x)
-#     # Stage 2
-#     x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
-#     x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', train_bn=train_bn)
-#     C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', train_bn=train_bn)
-#     # Stage 3
-#     x = conv_block(x, 3, [128, 128, 512], stage=3, block='a', train_bn=train_bn)
-#     x = identity_block(x, 3, [128, 128, 512], stage=3, block='b', train_bn=train_bn)
-#     x = identity_block(x, 3, [128, 128, 512], stage=3, block='c', train_bn=train_bn)
-#     C3 = x = identity_block(x, 3, [128, 128, 512], stage=3, block='d', train_bn=train_bn)
-#     # Stage 4
-#     x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a', train_bn=train_bn)
-#     block_count = {"resnet50": 5, "resnet101": 22}[architecture]
-#     for i in range(block_count):
-#         x = identity_block(x, 3, [256, 256, 1024], stage=4, block=chr(98 + i), train_bn=train_bn)
-#     C4 = x
-#     # Stage 5
-#     if stage5:
-#         x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a', train_bn=train_bn)
-#         x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b', train_bn=train_bn)
-#         C5 = x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c', train_bn=train_bn)
-#     else:
-#         C5 = None
-#     return [C1, C2, C3, C4, C5]
 
 def build_resnet_fpn(input_image, config):
     ''' computes the feature map for one batch'''
@@ -1278,81 +1297,6 @@ def build_resnet_fpn(input_image, config):
     print("shape_out: {}".format(P5.get_shape().as_list()))
     print("shape_out: {}".format(P6.get_shape().as_list()))
     return [P2, P3, P4, P5, P6]
-
-
-def build_fpn_P5(input_shape, config):
-    input_image = KL.Input(shape=input_shape)
-    P5 = add_conv_layer(C5, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')
-    P5 = add_conv_layer(P5, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p5")
-    model = KM.Model(input_image, P5, name='fpn_P5')
-    return model
-
-
-def build_fpn_P4(P5, C4, config):
-    input_P5 = KL.Input(shape=input_shape_P5)
-    input_C4 = KL.Input(shape=input_shape_C4)
-    P4 = KL.Add()([
-        KL.UpSampling2D(size=(2, 2))(P5),
-        add_conv_layer(C4, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')])
-    P4 = add_conv_layer(P4, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p4")
-    model
-    return P4
-
-
-def build_fpn_P3(P4, C3, config):
-    P3 = KL.Add()([
-        KL.UpSampling2D(size=(2, 2))(P4),
-        add_conv_layer(C3, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')])
-    P3 = add_conv_layer(P3, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p3")
-    return P3
-
-
-def build_fpn_P2(P3, C2, config):
-    P2 = KL.Add()([
-        KL.UpSampling2D(size=(2, 2))(P3),
-        add_conv_layer(C2, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')])
-    P2 = add_conv_layer(P2, 'fpn', config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p2")
-    return P2
-
-def build_fpn_P6(P5, config):
-    P6 = KL.MaxPool2D(pool_size=(1, 1), strides=2)(P5)
-    return P6
-
-
-
-    
-"""
-def view_merger_model(input_shape, config):
-    print("shape of input: {}".format(input_shape))
-    input_images = KL.Input(shape=[config.NUM_VIEWS]+input_shape)
-    
-    P2, P3, P4, P5, P6 = build_resnet_fpn(KL.Lambda(lambda x: x[:,0,:,:,:])(input_images), config=config)
-   
-    for i in range(1, config.NUM_VIEWS):
-        P2_t, P3_t, P4_t, P5_t, P6_t = build_resnet_fpn(KL.Lambda(lambda x: x[:,i,:,:,:])(input_images), config=config)
-        print("finished")
-        print("P2_t: {}".format(P2_t.get_shape().as_list()))
-        P2 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P2, P2_t])
-        P3 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P3, P3_t])
-        P4 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P4, P4_t])
-        P5 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P5, P5_t])
-        P6 = KL.Lambda(lambda x: tf.stack([x[0], x[1]], axis=1))([P6, P6_t])
-    if config.NUM_VIEWS == 1:
-        P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)
-        P3 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3)
-        P4 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4)
-        P5 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5)
-        P6 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6)
-   
-    print("shape_out: {}".format(P2.get_shape().as_list()))
-    print("shape_out: {}".format(P3.get_shape().as_list()))
-    print("shape_out: {}".format(P4.get_shape().as_list()))
-    print("shape_out: {}".format(P5.get_shape().as_list()))
-    print("shape_out: {}".format(P6.get_shape().as_list()))
-    merged_bb = KM.Model(input_images, [P2, P3, P4, P5, P6], name='backbone')
-    print("finished whole bb model")
-    return merged_bb
-"""
 
 def view_merger_model(input_shape, config):
     print("shape of input: {}".format(input_shape))
@@ -1445,8 +1389,6 @@ class ProposalLayer(KE.Layer):
         pre_nms_limit = tf.minimum(self.config.PRE_NMS_LIMIT, tf.shape(anchors)[1])
         ix = tf.nn.top_k(scores, pre_nms_limit, sorted=True,
                          name="top_anchors").indices
-        print("score_shape: {}".format(scores.get_shape().as_list()))
-        print("ix_shape: {}".format(ix.get_shape().as_list()))
         scores = utils.batch_slice([scores, ix], lambda x, y: tf.gather(x, y),
                                    self.config.IMAGES_PER_GPU)
         deltas = utils.batch_slice([deltas, ix], lambda x, y: tf.gather(x, y),
@@ -3070,7 +3012,7 @@ class MaskRCNN():
             shape=[None, config.IMAGE_SHAPE[0], config.IMAGE_SHAPE[1], config.IMAGE_SHAPE[2]], name="input_image")
         input_image_meta = KL.Input(shape=[config.IMAGE_META_SIZE],
                                     name="input_image_meta")
-        input_R = KL.Input(shape=[None, 3, 4], 
+        input_R = KL.Input(shape=[None, 3, 4],
                               name="input_R")
         input_Kmat = KL.Input(shape=[3, 3],
                               name="input_Kmat")
@@ -3116,6 +3058,8 @@ class MaskRCNN():
         backbone_model = view_merger_model(input_image.get_shape().as_list()[1:], config)
         
         P2, P3, P4, P5, P6 = backbone_model(input_image)
+
+        #PG5 = transformer_encoder(P5, input_R, input_Kmat, config, training=True)
 #         P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)
 #         P3 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3)
 #         P4 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4)
@@ -3152,42 +3096,42 @@ class MaskRCNN():
         P4_1 = P4
         P5_1 = P5
         P6_1 = P6
-        
+
         P2 = KL.Lambda(lambda x: x[:,0,:,:,:])(P2)
         P3 = KL.Lambda(lambda x: x[:,0,:,:,:])(P3)
         P4 = KL.Lambda(lambda x: x[:,0,:,:,:])(P4)
         P5 = KL.Lambda(lambda x: x[:,0,:,:,:])(P5)
         P6 = KL.Lambda(lambda x: x[:,0,:,:,:])(P6)
-        
+
 #         # Project feature maps into 3D-Space
         PG2, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P2")([P2_1, input_R, input_Kmat])
         PG3, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P3")([P3_1, input_R, input_Kmat])
         PG4, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P4")([P4_1, input_R, input_Kmat])
         PG5, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P5")([P5_1, input_R, input_Kmat])
         PG6, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P6")([P6_1, input_R, input_Kmat])
-        print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
+        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
         PG2 = grid_reas(PG2, "grid_reas_P2", config)
         PG3 = grid_reas(PG3, "grid_reas_P3", config)
         PG4 = grid_reas(PG4, "grid_reas_P4", config)
         PG5 = grid_reas(PG5, "grid_reas_P5", config)
         PG6 = grid_reas(PG6, "grid_reas_P6", config)
-        print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
+        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
         PG2 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=160), name="projs_PG2")([PG2, grid_pos, input_R, input_Kmat])
         PG3 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=80), name="projs_PG3")([PG3, grid_pos, input_R, input_Kmat])
         PG4 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=40), name="projs_PG4")([PG4, grid_pos, input_R, input_Kmat])
         PG5 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=20), name="projs_PG5")([PG5, grid_pos, input_R, input_Kmat])
         PG6 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=10), name="projs_PG6")([PG6, grid_pos, input_R, input_Kmat])
-        print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
-        
+        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+
         PG2 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG2)
         PG3 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG3)
         PG4 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG4)
         PG5 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG5)
         PG6 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG6)
-        print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
-        
-#         PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
+        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+
+        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
         PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
         PG3 = depth_sampling(PG3, config, name='grid_reas_depth_PG3')
         PG4 = depth_sampling(PG4, config, name='grid_reas_depth_PG4')
@@ -3200,13 +3144,13 @@ class MaskRCNN():
 #         PG4 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG4')(PG4)
 #         PG5 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG5')(PG5)
 #         PG6 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG6')(PG6)
-#         print("PG2_shape: {}".format(PG2.get_shape().as_list())) 
-        
+#         print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+
         PG2 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG2)
         PG3 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG3)
         PG4 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG4)
         PG5 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG5)
-        PG6 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG6)                         
+        PG6 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG6)
 
         if not config.VANILLA:
             print("recurrent mrcnn")
@@ -3215,7 +3159,10 @@ class MaskRCNN():
             PG4 = KL.Add()([PG4, P4])
             PG5 = KL.Add()([PG5, P5])
             PG6 = KL.Add()([PG6, P6])
-            
+            #P5 = KL.Add()([PG5, P5])
+
+            # rpn_feature_maps = [P2, P3, P4, P5, P6]
+            # mrcnn_feature_maps = [P2, P3, P4, P5]
             rpn_feature_maps = [PG2, PG3, PG4, PG5, PG6]
             mrcnn_feature_maps = [PG2, PG3, PG4, PG5]
         else:
@@ -3223,6 +3170,8 @@ class MaskRCNN():
             rpn_feature_maps = [P2, P3, P4, P5, P6]
             mrcnn_feature_maps = [P2, P3, P4, P5]
 
+        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+        print("PG6_shape: {}".format(PG6.get_shape().as_list()))
             
                 # Anchors
         if mode == "training":
