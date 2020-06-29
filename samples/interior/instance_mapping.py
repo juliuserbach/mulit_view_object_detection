@@ -26,6 +26,7 @@ NYU40_to_sel_map = {0: 0, 1: 0, 2: 0, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 0, 9: 0, 
 for subset in subsets:
     # make one mapping for all scenes in one subset(train, val, test) keys are like "scene_name_instance_id"
     mapping = {}
+    view_count = 0
     scene_paths = glob.glob(os.path.join(ROOT_DIR, DATASET_DIR, subset,'*'))
     
     header = ["instance_id", "class_id", "frame_id"]
@@ -57,12 +58,13 @@ for subset in subsets:
                 class_id = nyu_im[binary_mask]
 
                 if NYU40_to_sel_map[class_id[0]] !=0:   
+                    view_count += 1
                     if scene_name+'_'+str(instance_id) in mapping:
                         mapping[scene_name+'_'+str(instance_id)].append([NYU40_to_sel_map[class_id[0]], scene_name+'_id'+timestamp])
                     else:
                         mapping.update({scene_name+'_'+str(instance_id): [[NYU40_to_sel_map[class_id[0]], scene_name+'_id'+timestamp]]}) ###
 
-                            
+    print("The {}-set has {} views.".format(subset, view_count))                        
     with open('{}.json'.format(os.path.join(ROOT_DIR, DATASET_DIR, subset, 'instance_mapping')), 'w') as outfile:
         json.dump(mapping, outfile)
 

@@ -765,7 +765,10 @@ def unproj_feat(inputs, config):
     grid_range = tf.tile(grid_range, [config.BATCH_SIZE, 1])
     grid_range_z = tf.tile(grid_range_z, [config.BATCH_SIZE, 1])
     # calculate position of grid in world coordinate frame
-    grid_dist = 600/320 * config.vmax
+    if hasattr(config, 'GRID_DIST'):
+        grid_dist =config.GRID_DIST
+    else: 
+        grid_dist = 600/320 * config.vmax
     grid_position = K.dot(tf.reshape(Rcam_old[:,0,:,:], [-1, 3, 4]), tf.constant([0.0, 0.0, grid_dist, 1.0], shape=[4,1]) )
     grid_position = tf.reshape(grid_position, [config.BATCH_SIZE, 3])
     print("grid position shape: {}".format(grid_position.get_shape().as_list()))
@@ -864,7 +867,10 @@ def proj_grid(inputs, config, proj_size):
                 Kmat, rs_grid, lower=False, name='KinvX')
             
             # Define z values of samples along ray
-            grid_dist = 600/320 * config.vmax 
+            if hasattr(config, 'GRID_DIST'):
+                grid_dist =config.GRID_DIST
+            else: 
+                grid_dist = 600/320 * config.vmax
             z_samples = tf.linspace(grid_dist - config.vmax*0.5, grid_dist + config.vmax*0.5, config.samples)
 
             # Transform Xc to Xw using transpose of rotation matrix
@@ -1186,44 +1192,6 @@ def conv_block(input_tensor, kernel_size, filters, stage, block,
     x = KL.Activation('relu')(x)
     return x
 
-# def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
-#     """Build a ResNet graph.
-#         architecture: Can be resnet50 or resnet101
-#         stage5: Boolean. If False, stage5 of the network is not created
-#         train_bn: Boolean. Train or freeze Batch Norm layers
-#     """
-#     assert architecture in ["resnet50", "resnet101"]
-#     # Stage 1
-#     x = KL.TimeDistributed(KL.ZeroPadding2D((3, 3)))(input_image)
-#     x = KL.TimeDistributed(KL.Conv2D(64, (7, 7), strides=(2, 2), use_bias=True), name='conv1')(x)
-#     x = KL.TimeDistributed(BatchNorm(), name='bn_conv1')(x, training=train_bn)
-#     x = KL.Activation('relu')(x)
-#     C1 = x = KL.TimeDistributed(KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same"))(x)
-#     # Stage 2
-#     x = conv_block(x, 3, [32, 32, 128], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
-#     x = identity_block(x, 3, [32, 32, 128], stage=2, block='b', train_bn=train_bn)
-#     C2 = x = identity_block(x, 3, [32, 32, 128], stage=2, block='c', train_bn=train_bn)
-#     # Stage 3
-#     x = conv_block(x, 3, [64, 64, 128], stage=3, block='a', train_bn=train_bn)
-#     x = identity_block(x, 3, [64, 64, 128], stage=3, block='b', train_bn=train_bn)
-#     x = identity_block(x, 3, [64, 64, 128], stage=3, block='c', train_bn=train_bn)
-#     C3 = x = identity_block(x, 3, [64, 64, 128], stage=3, block='d', train_bn=train_bn)
-#     # Stage 4
-#     x = conv_block(x, 3, [64, 64, 256], stage=4, block='a', train_bn=train_bn)
-#     block_count = {"resnet50": 3, "resnet101": 22}[architecture]
-#     for i in range(block_count):
-#         x = identity_block(x, 3, [128, 128, 256], stage=4, block=chr(98 + i), train_bn=train_bn)
-#     C4 = x
-#     # Stage 5
-#     if stage5:
-#         x = conv_block(x, 3, [128, 128, 256], stage=5, block='a', train_bn=train_bn)
-#         x = identity_block(x, 3, [128, 128, 256], stage=5, block='b', train_bn=train_bn)
-#         C5 = x = identity_block(x, 3, [128, 128, 256], stage=5, block='c', train_bn=train_bn)
-#     else:
-#         C5 = None
-#     return [C1, C2, C3, C4, C5]
-
-
 def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
     """Build a ResNet graph.
         architecture: Can be resnet50 or resnet101
@@ -1233,33 +1201,71 @@ def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
     assert architecture in ["resnet50", "resnet101"]
     # Stage 1
     x = KL.TimeDistributed(KL.ZeroPadding2D((3, 3)))(input_image)
-    x = add_conv_layer(x, scope='res1', filters=64, kernel_size=(7, 7), strides=(2, 2), name='conv1', use_bias=True)
-    x = add_bn_layer(name='bn_conv1')(x, training=train_bn)
+    x = KL.TimeDistributed(KL.Conv2D(64, (7, 7), strides=(2, 2), use_bias=True), name='conv1')(x)
+    x = KL.TimeDistributed(BatchNorm(), name='bn_conv1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
-    C1 = x = KL.TimeDistributed(KL.MaxPool2D((3, 3), strides=(2, 2), padding="same"))(x)
+    C1 = x = KL.TimeDistributed(KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same"))(x)
     # Stage 2
-    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
-    x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', train_bn=train_bn)
-    C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', train_bn=train_bn)
+    x = conv_block(x, 3, [32, 32, 128], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
+    x = identity_block(x, 3, [32, 32, 128], stage=2, block='b', train_bn=train_bn)
+    C2 = x = identity_block(x, 3, [32, 32, 128], stage=2, block='c', train_bn=train_bn)
     # Stage 3
-    x = conv_block(x, 3, [128, 128, 512], stage=3, block='a', train_bn=train_bn)
-    x = identity_block(x, 3, [128, 128, 512], stage=3, block='b', train_bn=train_bn)
-    x = identity_block(x, 3, [128, 128, 512], stage=3, block='c', train_bn=train_bn)
-    C3 = x = identity_block(x, 3, [128, 128, 512], stage=3, block='d', train_bn=train_bn)
+    x = conv_block(x, 3, [64, 64, 128], stage=3, block='a', train_bn=train_bn)
+    x = identity_block(x, 3, [64, 64, 128], stage=3, block='b', train_bn=train_bn)
+    x = identity_block(x, 3, [64, 64, 128], stage=3, block='c', train_bn=train_bn)
+    C3 = x = identity_block(x, 3, [64, 64, 128], stage=3, block='d', train_bn=train_bn)
     # Stage 4
-    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a', train_bn=train_bn)
-    block_count = {"resnet50": 5, "resnet101": 22}[architecture]
+    x = conv_block(x, 3, [64, 64, 256], stage=4, block='a', train_bn=train_bn)
+    block_count = {"resnet50": 3, "resnet101": 22}[architecture]
     for i in range(block_count):
-        x = identity_block(x, 3, [256, 256, 1024], stage=4, block=chr(98 + i), train_bn=train_bn)
+        x = identity_block(x, 3, [128, 128, 256], stage=4, block=chr(98 + i), train_bn=train_bn)
     C4 = x
     # Stage 5
     if stage5:
-        x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a', train_bn=train_bn)
-        x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b', train_bn=train_bn)
-        C5 = x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c', train_bn=train_bn)
+        x = conv_block(x, 3, [128, 128, 256], stage=5, block='a', train_bn=train_bn)
+        x = identity_block(x, 3, [128, 128, 256], stage=5, block='b', train_bn=train_bn)
+        C5 = x = identity_block(x, 3, [128, 128, 256], stage=5, block='c', train_bn=train_bn)
     else:
         C5 = None
     return [C1, C2, C3, C4, C5]
+
+
+# def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
+#     """Build a ResNet graph.
+#         architecture: Can be resnet50 or resnet101
+#         stage5: Boolean. If False, stage5 of the network is not created
+#         train_bn: Boolean. Train or freeze Batch Norm layers
+#     """
+#     assert architecture in ["resnet50", "resnet101"]
+#     # Stage 1
+#     x = KL.TimeDistributed(KL.ZeroPadding2D((3, 3)))(input_image)
+#     x = add_conv_layer(x, scope='res1', filters=64, kernel_size=(7, 7), strides=(2, 2), name='conv1', use_bias=True)
+#     x = add_bn_layer(name='bn_conv1')(x, training=train_bn)
+#     x = KL.Activation('relu')(x)
+#     C1 = x = KL.TimeDistributed(KL.MaxPool2D((3, 3), strides=(2, 2), padding="same"))(x)
+#     # Stage 2
+#     x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
+#     x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', train_bn=train_bn)
+#     C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', train_bn=train_bn)
+#     # Stage 3
+#     x = conv_block(x, 3, [128, 128, 512], stage=3, block='a', train_bn=train_bn)
+#     x = identity_block(x, 3, [128, 128, 512], stage=3, block='b', train_bn=train_bn)
+#     x = identity_block(x, 3, [128, 128, 512], stage=3, block='c', train_bn=train_bn)
+#     C3 = x = identity_block(x, 3, [128, 128, 512], stage=3, block='d', train_bn=train_bn)
+#     # Stage 4
+#     x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a', train_bn=train_bn)
+#     block_count = {"resnet50": 5, "resnet101": 22}[architecture]
+#     for i in range(block_count):
+#         x = identity_block(x, 3, [256, 256, 1024], stage=4, block=chr(98 + i), train_bn=train_bn)
+#     C4 = x
+#     # Stage 5
+#     if stage5:
+#         x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a', train_bn=train_bn)
+#         x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b', train_bn=train_bn)
+#         C5 = x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c', train_bn=train_bn)
+#     else:
+#         C5 = None
+#     return [C1, C2, C3, C4, C5]
 
 def build_resnet_fpn(input_image, config):
     ''' computes the feature map for one batch'''
@@ -2738,7 +2744,7 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
 
 def data_generator(dataset, config, shuffle=True, augment=False, augmentation=None,
                    random_rois=0, batch_size=1, detection_targets=False,
-                   no_augmentation_sources=None):
+                   no_augmentation_sources=None, rnd_state=None):
     """A generator that returns images and corresponding target class ids,
     bounding box deltas, and masks.
 
@@ -2783,6 +2789,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     
     instance_index = -1
     image_index = -1
+    random_shuffle = np.random.RandomState(seed=rnd_state)
 #     instance_ids = np.copy(list(dataset.instance_map.keys()))
 #     view_ids = np.copy(list(dataset.view_map.keys()))
     instance_ids = np.copy(list(dataset.instance_map.keys()))
@@ -2807,13 +2814,13 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             instance_index = (instance_index + 1) % len(instance_ids)
 #             image_index = (image_index + 1) % len(view_ids)
             if shuffle and instance_index == 0:
-                np.random.shuffle(instance_ids)
+                random_shuffle.shuffle(instance_ids)
 
             # Get GT bounding boxes and masks for image.
 #             view_id = view_ids[image_index]
             instance_id = instance_ids[instance_index]
 #             image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id)
-            image_ids = dataset.load_view(config.NUM_VIEWS, instance=instance_id)
+            image_ids = dataset.load_view(config.NUM_VIEWS, instance=instance_id, rnd_state=rnd_state)
             # skip instance if it has to few views (return of load_views=None)
             if not image_ids:
                 continue
@@ -3600,9 +3607,9 @@ class MaskRCNN():
         train_generator = data_generator(train_dataset, self.config, shuffle=True,
                                          augmentation=augmentation,
                                          batch_size=self.config.BATCH_SIZE,
-                                         no_augmentation_sources=no_augmentation_sources)
+                                         no_augmentation_sources=no_augmentation_sources, rnd_state=None)
         val_generator = data_generator(val_dataset, self.config, shuffle=True,
-                                       batch_size=self.config.BATCH_SIZE)
+                                       batch_size=self.config.BATCH_SIZE, rnd_state=1)
 
         # Create log_dir if it does not exist
         if not os.path.exists(self.log_dir):

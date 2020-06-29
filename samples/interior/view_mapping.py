@@ -81,7 +81,8 @@ for subset in subsets:
         grid_dist = 600/320 * vmax
         
         #select images with objects of interest inside
-        valid_images = []
+        valid_image = False     
+        
         for i in image_ids:
             #timestamp = image_name[:-4]
             timestamp = coco.imgs[i]['timestamp'] 
@@ -97,19 +98,14 @@ for subset in subsets:
 
             # check if objects of interest are present in the image
             instance_ids = np.unique(instance_im)
-            valid_image = False
+            instance_ids_of_interest = []
             for instance_id in instance_ids:
                 binary_mask = np.where(instance_im == instance_id , True, False)
                 class_id = nyu_im[binary_mask]
                 if NYU40_to_sel_map[class_id[0]] !=0: 
-                    valid_images.append(i)
-                    break
-                
-        
-        for i in image_ids:
-            if i not in valid_images:
-                continue
-            timestamp = coco.imgs[i]['timestamp'] 
+                    valid_image = True
+                    instance_ids_of_interest.append(instance_id)
+                    
             # get R|t
             vec = [ float(x) for x in time_to_pose[timestamp]]
             R=np.concatenate((utils.vec2rot(np.array(vec)), np.array(vec[1:4]).reshape(3,1)), axis=1)
@@ -123,33 +119,65 @@ for subset in subsets:
             rs_grid = np.concatenate([rs_grid, np.ones([1, nV])], axis=0)
 
             for j in image_ids:
-                if j==i or j not in valid_images:
+                if j==i or not valid_image:
                     continue
                 timestamp = coco.imgs[j]['timestamp'] 
+                instance_mask_path = os.path.join(scene_path, 
+                                                  label_path,
+                                                  str(timestamp)+'_instance.png')
+                nyu_mask_path = os.path.join(scene_path, 
+                                             label_path,
+                                             str(timestamp)+'_nyu.png')
+                # Load images
+                instance_im = imageio.imread(instance_mask_path)
+                nyu_im = imageio.imread(nyu_mask_path)
+
+                # check if objects of interest are present in the image
+                instance_ids_j = np.unique(instance_im)
+                instance_ids_of_interest_j = []
+                for instance_id in instance_ids_j:
+                    binary_mask = np.where(instance_im == instance_id , True, False)
+                    class_id = nyu_im[binary_mask]
+                    if NYU40_to_sel_map[class_id[0]] !=0: 
+                        instance_ids_of_interest_j.append(instance_id)
                 
-                # get R|t
-                vec = [ float(x) for x in time_to_pose[timestamp]]
-                R=np.concatenate((utils.vec2rot(np.array(vec)), np.array(vec[1:4]).reshape(3,1)), axis=1)
-                Rt = np.transpose(R[:, :3])
-                tr = R[ :, 3].reshape((3,1))
-                R = np.concatenate([Rt, -np.matmul(Rt, tr)], axis=1)
-                KRcam = np.matmul(K, R)
-                # Project grid/
-                im_p = np.matmul(np.reshape(KRcam, [-1, 4]), rs_grid) 
-                im_x, im_y, im_z = im_p[::3, :], im_p[1::3, :], im_p[2::3, :]
-                im_x = (im_x / im_z) 
-                im_y = (im_y / im_z)
-                x_inside = np.where(np.logical_and(im_x > 0, im_x < 640), True, False)
-                y_inside = np.where(np.logical_and(im_y > 0, im_y < 480), True, False)
-                voxel_visible = np.logical_and(y_inside, x_inside)
-                num_visible = voxel_visible.sum()
-                if num_visible/nvox**3 > 0.50:
-                    print("percentage of overlap: {}".format(num_visible/nvox**3))
-                    if scene_name+'_id'+str(i) in mapping:
-                        mapping[scene_name+'_id'+str(i)].append(scene_name+'_id'+str(j))
-                    else:
-                        mapping.update({scene_name+'_id'+str(i): [scene_name+'_id'+str(j)]}) 
-                        
+                # check if the views see the same instance of interest
+                valid_secondary = False
+                for instance_id in instance_ids_of_interest:
+                    if instance_id in instance_ids_of_interest_j:
+                        valid_secondary = True
+                        break
+                
+                if valid_secondary:                
+                    # get R|t
+                    vec = [ float(x) for x in time_to_pose[timestamp]]
+                    R=np.concatenate((utils.vec2rot(np.array(vec)), np.array(vec[1:4]).reshape(3,1)), axis=1)
+                    Rt = np.transpose(R[:, :3])
+                    tr = R[ :, 3].reshape((3,1))
+                    R = np.concatenate([Rt, -np.matmul(Rt, tr)], axis=1)
+                    KRcam = np.matmul(K, R)
+                    # Project grid/
+                    im_p = np.matmul(np.reshape(KRcam, [-1, 4]), rs_grid) 
+                    im_x, im_y, im_z = im_p[::3, :], im_p[1::3, :], im_p[2::3, :]
+                    im_x = (im_x / im_z) 
+                    im_y = (im_y / im_z)
+                    x_inside = np.where(np.logical_and(im_x > 0, im_x < 640), True, False)
+                    y_inside = np.where(np.logical_and(im_y > 0, im_y < 480), True, False)
+                    voxel_visible = np.logical_and(y_inside, x_inside)
+                    num_visible = voxel_visible.sum()
+                    if num_visible/nvox**3 > 0.50:
+                        print("percentage of overlap: {}".format(num_visible/nvox**3))
+                        if scene_name+'_id'+str(i) in mapping:
+                            mapping[scene_name+'_id'+str(i)].append(scene_name+'_id'+str(j))
+                        else:
+                            mapping.update({scene_name+'_id'+str(i): [scene_name+'_id'+str(j)]}) 
+    secondary_views = list(mapping.values())
+    print(secondary_views)
+    view_count = 0
+    for secondary_view in secondary_views:
+        if len(secondary_view) >= 4:
+            view_count += 1
+    print("The {}-set has {} views.".format(subset, view_count))       
     with open('{}.json'.format(os.path.join(ROOT_DIR, DATASET_DIR, subset, 'view_mapping')), 'w') as outfile:
         json.dump(mapping, outfile)
         

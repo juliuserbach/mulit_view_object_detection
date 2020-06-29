@@ -287,14 +287,15 @@ class InteriorDataset(utils.Dataset):
         if not instance:
             instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
             # assure that there are at least n different views of the same instance
-            while np.asarray(self.instance_map[instance]).shape[0] < n:
+            while np.asarray(self.instance_map[instance]).shape[0] < max_views:
                 instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
         obj_inst = np.asarray(self.instance_map[instance])
         num_available_views = obj_inst.shape[0]
-        if num_available_views < n:
+        if num_available_views < max_views:
             return None
-        views = LocalProcRandGen.choice(range(obj_inst.shape[0]), min(num_available_views, max_views), replace=False)
+        views = LocalProcRandGen.choice(range(obj_inst.shape[0]), max_views, replace=False)
         image_ids = obj_inst[views][:,1]
+        image_ids = image_ids[:n]
         out = []
         for image_id in image_ids:
             image_id = self.image_from_source_map['interior.'+image_id]
@@ -383,14 +384,15 @@ if __name__ == '__main__':
                 STEPS_PER_EPOCH = 5000
                 VALIDATION_STEPS = 800
                 NUM_CLASSES = len(selected_classes)  # background + num classes
-                vmin = -1.07
-                vmax = 1.07
+                vmin = -5.
+                vmax = 5.
                 nvox = 40
                 nvox_z = 40
+                GRID_DIST = 5.
                 vsize = float(vmax - vmin) / nvox
                 vox_bs = 1
                 im_bs = 1
-                samples = 10
+                samples = 15
                 NUM_VIEWS = 2
                 RECURRENT = False
                 USE_RPN_ROIS = True
@@ -451,7 +453,7 @@ if __name__ == '__main__':
         model_path = args.model
 
 #     # Load weights
-#     model_path = os.path.join(args.logs, 'interiornet20200330T1532', 'mask_rcnn_interiornet_0298.h5')
+    #model_path_bb = os.path.join(args.logs, '../weights', 'mask_rcnn_interiornet_bb.h5')
 #     print("Loading weights ", model_path)
     from keras.engine import saving
     import h5py
@@ -527,7 +529,7 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=4,
+                    epochs=8,
                     layers='grid+', 
                    custom_callbacks = [lrate])
 #         for layer in model.keras_model.layers:
@@ -540,7 +542,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=8,
+                    epochs=14,
                     layers='4+')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -550,8 +552,8 @@ if __name__ == '__main__':
 #         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=12,
+                    learning_rate=config.LEARNING_RATE/10,
+                    epochs=20,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -560,7 +562,7 @@ if __name__ == '__main__':
 
     elif args.command == "evaluate":
         dataset = InteriorDataset()
-        dataset.load_Interior(dataset_dir=args.dataset, subset='train', class_ids=selected_class_list, 
+        dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
         
@@ -607,17 +609,18 @@ if __name__ == '__main__':
                     utils.compute_ap(gt_bbox, gt_class_id, gt_mask,
                                       r['rois'], r['class_ids'], r['scores'], r['masks'])
                 APs.append(AP)
+                print("meanAP: {}".format(np.mean(APs)))
             return APs
 
         # Pick a set of random images
-        APs = compute_batch_ap(instance_ids[:1000])
+        APs = compute_batch_ap(instance_ids[:])
         np.save(model.log_dir, APs)
         print("mAP @ IoU=50: ", np.mean(APs))
         
     elif args.command == "visualize":
         max_views = 4
         dataset = InteriorDataset()
-        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
+        dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
         instance_ids = np.copy(list(dataset.instance_map.keys()))
