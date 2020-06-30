@@ -275,35 +275,7 @@ class InteriorDataset(utils.Dataset):
         image_info = self.image_info[image_id]
         return image_info["R"]
     
-    def load_view(self, n, instance=None, rnd_state=None):
-        """ takes number of views n and outputs n image ids of a random instance
-        fix rnd_state for evaluation purposes
-        """
-        if n < 0:  
-            max_views = 4
-        else:
-            max_views = n
-        LocalProcRandGen = np.random.RandomState(rnd_state)
-        if not instance:
-            instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
-            # assure that there are at least n different views of the same instance
-            while np.asarray(self.instance_map[instance]).shape[0] < max_views:
-                instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
-        obj_inst = np.asarray(self.instance_map[instance])
-        num_available_views = obj_inst.shape[0]
-        if num_available_views < max_views:
-            return None
-        views = LocalProcRandGen.choice(range(obj_inst.shape[0]), max_views, replace=False)
-        image_ids = obj_inst[views][:,1]
-        image_ids = image_ids[:n]
-        out = []
-        for image_id in image_ids:
-            image_id = self.image_from_source_map['interior.'+image_id]
-            out.append(image_id)
-        return out
-
-    
-#     def load_view(self, n, main_image=None, rnd_state=None):
+#     def load_view(self, n, instance=None, rnd_state=None):
 #         """ takes number of views n and outputs n image ids of a random instance
 #         fix rnd_state for evaluation purposes
 #         """
@@ -312,23 +284,53 @@ class InteriorDataset(utils.Dataset):
 #         else:
 #             max_views = n
 #         LocalProcRandGen = np.random.RandomState(rnd_state)
-#         if not main_image:
-#             main_image = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
-#             print(main_image)
+#         if not instance:
+#             instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
 #             # assure that there are at least n different views of the same instance
-#             while np.asarray(self.view_map[main_image]).shape[0] < n:
-#                 view = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
-#         secondary_views = np.asarray(self.view_map[main_image])
-#         num_available_views = secondary_views.shape[0]
-#         if num_available_views < n:
+#             while np.asarray(self.instance_map[instance]).shape[0] < max_views:
+#                 instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
+#         obj_inst = np.asarray(self.instance_map[instance])
+#         num_available_views = obj_inst.shape[0]
+#         if num_available_views < max_views:
 #             return None
-#         views = LocalProcRandGen.choice(range(secondary_views.shape[0]), min(num_available_views-1, max_views-1), replace=False)
-#         image_ids = secondary_views[views]
-#         out = [self.image_from_source_map['interior.'+main_image]]
+#         views = LocalProcRandGen.choice(range(obj_inst.shape[0]), max_views, replace=False)
+#         image_ids = obj_inst[views][:,1]
+#         image_ids = image_ids[:n]
+#         out = []
 #         for image_id in image_ids:
 #             image_id = self.image_from_source_map['interior.'+image_id]
 #             out.append(image_id)
 #         return out
+
+    
+    def load_view(self, n, main_image=None, rnd_state=None):
+        """ takes number of views n and outputs n image ids of a random instance
+        fix rnd_state for evaluation purposes
+        """
+        if n < 0:  
+            max_views = 4
+        else:
+            max_views = n
+        max_views = 2
+        LocalProcRandGen = np.random.RandomState(rnd_state)
+        if not main_image:
+            main_image = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
+            print(main_image)
+            # assure that there are at least n different views of the same instance
+            while np.asarray(self.view_map[main_image]).shape[0] < max_views:
+                view = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
+        secondary_views = np.asarray(self.view_map[main_image])
+        num_available_views = secondary_views.shape[0]
+        if num_available_views < max_views:
+            return None
+        views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views-1, replace=False)
+        image_ids = secondary_views[views]
+        image_ids = image_ids[:n-1]
+        out = [self.image_from_source_map['interior.'+main_image]]
+        for image_id in image_ids:
+            image_id = self.image_from_source_map['interior.'+image_id]
+            out.append(image_id)
+        return out
 
 ############################################################
 #  Training
@@ -381,18 +383,18 @@ if __name__ == '__main__':
                 PRE_NMS_LIMIT = 1500
                 GPU_COUNT = 1
                 IMAGES_PER_GPU = 1
-                STEPS_PER_EPOCH = 5000
-                VALIDATION_STEPS = 800
+                STEPS_PER_EPOCH = 100
+                VALIDATION_STEPS = 20
                 NUM_CLASSES = len(selected_classes)  # background + num classes
-                vmin = -5.
-                vmax = 5.
+                vmin = -1.07
+                vmax = 1.07
                 nvox = 40
                 nvox_z = 40
-                GRID_DIST = 5.
+                GRID_DIST = False
                 vsize = float(vmax - vmin) / nvox
                 vox_bs = 1
                 im_bs = 1
-                samples = 15
+                samples = 10
                 NUM_VIEWS = 2
                 RECURRENT = False
                 USE_RPN_ROIS = True
@@ -424,7 +426,7 @@ if __name__ == '__main__':
             NUM_VIEWS = 2
             RECURRENT = False
             USE_RPN_ROIS = True
-            LEARNING_RATE = 0.001
+            LEARNING_RATE = 0.01
             GRID_REAS = 'ident'
             BACKBONE = 'resnet50'
             VANILLA = False
@@ -455,20 +457,20 @@ if __name__ == '__main__':
 #     # Load weights
     #model_path_bb = os.path.join(args.logs, '../weights', 'mask_rcnn_interiornet_bb.h5')
 #     print("Loading weights ", model_path)
-    from keras.engine import saving
-    import h5py
-    # f = h5py.File(os.path.join(model_path), mode='r')
-    folder, weight_name = os.path.split(model_path)
-    epoch = weight_name[-7:-3]
-    model_path_bb = folder+'/backbone_callb_epoch_{}.h5'.format(epoch)
-    f = h5py.File(os.path.join(model_path_bb), mode='r')
-    #f = h5py.File(COCO_MODEL_PATH, mode='r')
-    for layer in model.keras_model.layers:
-        if layer.name == 'backbone':
-            layers = layer.layers
-            print(layer.__class__.__name__)
-            saving.load_weights_from_hdf5_group_by_name(f, layer.layers)
-            break
+#     from keras.engine import saving
+#     import h5py
+#     # f = h5py.File(os.path.join(model_path), mode='r')
+#     folder, weight_name = os.path.split(model_path)
+#     epoch = weight_name[-7:-3]
+#     model_path_bb = folder+'/backbone_callb_epoch_{}.h5'.format(epoch)
+#     f = h5py.File(os.path.join(model_path_bb), mode='r')
+#     #f = h5py.File(COCO_MODEL_PATH, mode='r')
+#     for layer in model.keras_model.layers:
+#         if layer.name == 'backbone':
+#             layers = layer.layers
+#             print(layer.__class__.__name__)
+#             saving.load_weights_from_hdf5_group_by_name(f, layer.layers)
+#             break
 #     model_path_bb = os.path.join(ROOT_DIR, 'weights', 'mask_rcnn_interiornet_bb.h5', 'backbone_sep.h5')
 #     model.load_weights(model_path_bb, by_name=True)
 #     train_layers = 'grid+'
@@ -489,7 +491,7 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-    model.load_weights(model_path, by_name=True, exclude=["backbone"])
+    #model.load_weights(model_path, by_name=True, exclude=["backbone"])
 #     model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1"])
 #     model.load_weights(model_path, by_name=True, exclude=["backbone", "grid_reas_P2ident_conv", "grid_reas_P3ident_conv", "grid_reas_P4ident_conv", "grid_reas_P5ident_conv", "grid_reas_P6ident_conv"])
 
@@ -529,31 +531,29 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=8,
-                    layers='grid+', 
-                   custom_callbacks = [lrate])
-#         for layer in model.keras_model.layers:
-#             if layer.name == 'backbone':
-#                 layer.save_weights(os.path.join(model.log_dir, 'backbone_sep.h5'))
-#                 break
-
+                    epochs=150,
+                    layers='all')
 # #         Training - Stage 2
 #         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=14,
+                    epochs=400,
+                    layers='grid+')
+#         Training - Stage 3
+#         Finetune layers from ResNet stage 4 and up
+        print("Fine tune Resnet stage 4 and up")
+        model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=800,
                     layers='4+')
-#         for layer in model.keras_model.layers:
-#             if layer.name == 'backbone':
-#                 layer.save_weights(os.path.join(model.log_dir, 'backbone_sep.h5'))
-#                 break
-        # Training - Stage 3
+
+        # Training - Stage 4
 #         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE/10,
-                    epochs=20,
+                    epochs=1500,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -562,14 +562,14 @@ if __name__ == '__main__':
 
     elif args.command == "evaluate":
         dataset = InteriorDataset()
-        dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list, 
+        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
         
         instance_ids = np.copy(list(dataset.instance_map.keys()))
         
         def compute_batch_ap(instance_ids):
-            max_views = 4
+            max_views = 2
             APs = []
             for instance_index, instance_id in enumerate(instance_ids):
                 #instance_id = instance_ids[instance_index]               
