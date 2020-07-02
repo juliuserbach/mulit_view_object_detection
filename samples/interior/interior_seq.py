@@ -392,7 +392,7 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         class TrainConfig(InteriorNetConfig):
-                TOP_DOWN_PYRAMID_SIZE = 72
+                TOP_DOWN_PYRAMID_SIZE = 64
 #                 FPN_CLASSIF_FC_LAYERS_SIZE = 128
 #                 POST_NMS_ROIS_INFERENCE = 1000
                 POST_NMS_ROIS_TRAINING = 500
@@ -409,19 +409,23 @@ if __name__ == '__main__':
                 min_z = 0.5
                 max_z = 5.
                 GRID_DIST = False
+                vmin = -5.
+                vmax = 5.
+                GRID_DIST = 4.
+                nvox = 60
+                nvox_z = 60
                 vsize = float(vmax - vmin) / nvox
                 vox_bs = 1
                 im_bs = 1
-                samples = 1
-                NUM_VIEWS = 1
+                samples = 10
+                NUM_VIEWS = 2
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
                 GRID_REAS = 'ident'
                 BACKBONE = 'resnet50'
-                VANILLA = True
+                VANILLA = False
                 WEIGHT_DECAY = 0.0001
-                TRANSFORMER = False
         config = TrainConfig()
     else:
         class InferenceConfig(InteriorNetConfig):
@@ -441,14 +445,14 @@ if __name__ == '__main__':
             vsize = float(vmax - vmin) / nvox
             vox_bs = 1
             im_bs = 1
-            samples = 2
+            samples = 10
             NUM_VIEWS = 2
             RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.01
             GRID_REAS = 'ident'
             BACKBONE = 'resnet50'
-            VANILLA = True
+            VANILLA = False
             
         config = InferenceConfig()
     config.display()
@@ -474,22 +478,22 @@ if __name__ == '__main__':
         model_path = args.model
 
 #     # Load weights
-#    model_path_bb = os.path.join(args.logs, '../weights', 'backbone_callb_epoch_1051.h5')
-# #     print("Loading weights ", model_path)
-    from keras.engine import saving
-    import h5py
-    # f = h5py.File(os.path.join(model_path), mode='r')
-    folder, weight_name = os.path.split(model_path)
-    epoch = weight_name[-7:-3]
-    model_path_bb = folder+'/backbone_callb_epoch_{}.h5'.format(epoch)
-    f = h5py.File(os.path.join(model_path_bb), mode='r')
-    #f = h5py.File(COCO_MODEL_PATH, mode='r')
-    for layer in model.keras_model.layers:
-        if layer.name == 'backbone':
-            layers = layer.layers
-            print(layer.__class__.__name__)
-            saving.load_weights_from_hdf5_group_by_name(f, layer.layers)
-            break
+    #model_path_bb = os.path.join(args.logs, '../weights', 'mask_rcnn_interiornet_bb.h5')
+#     print("Loading weights ", model_path)
+#     from keras.engine import saving
+#     import h5py
+#     # f = h5py.File(os.path.join(model_path), mode='r')
+#     folder, weight_name = os.path.split(model_path)
+#     epoch = weight_name[-7:-3]
+#     model_path_bb = folder+'/backbone_callb_epoch_{}.h5'.format(epoch)
+#     f = h5py.File(os.path.join(model_path_bb), mode='r')
+#     #f = h5py.File(COCO_MODEL_PATH, mode='r')
+#     for layer in model.keras_model.layers:
+#         if layer.name == 'backbone':
+#             layers = layer.layers
+#             print(layer.__class__.__name__)
+#             saving.load_weights_from_hdf5_group_by_name(f, layer.layers)
+#             break
 #     model_path_bb = os.path.join(ROOT_DIR, 'weights', 'mask_rcnn_interiornet_bb.h5', 'backbone_sep.h5')
 #     model.load_weights(model_path_bb, by_name=True)
 #     train_layers = 'grid+'
@@ -510,7 +514,7 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-    model.load_weights(model_path, by_name=True, exclude=["backbone"])
+    #model.load_weights(model_path, by_name=True, exclude=["backbone"])
 #     model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1"])
 #     model.load_weights(model_path, by_name=True, exclude=["backbone", "grid_reas_P2ident_conv", "grid_reas_P3ident_conv", "grid_reas_P4ident_conv", "grid_reas_P5ident_conv", "grid_reas_P6ident_conv"])
 
@@ -546,7 +550,7 @@ if __name__ == '__main__':
 
         # *** This training schedule is an example. Update to your needs ***
 
-        #Training - Stage 1
+        # Training - Stage 1
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
@@ -576,25 +580,25 @@ if __name__ == '__main__':
 
     elif args.command == "evaluate":
         dataset = InteriorDataset()
-        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
+        dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list,
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
         
         instance_ids = np.copy(list(dataset.instance_map.keys()))
         
-        def compute_batch_ap(instance_ids):
+        def compute_batch_ap(view_ids):
             max_views = 2
             APs = []
-            for instance_index, instance_id in enumerate(instance_ids):
+            for view_index, view_id in enumerate(view_ids):
                 #instance_id = instance_ids[instance_index]               
-                image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
+                image_ids = dataset.load_view(max_views, main_image=view_id, rnd_state=0)
                 # skip instance if it has to few views (return of load_views=None)
                 if not image_ids:
                     continue
                 image_ids = image_ids[:config.NUM_VIEWS]
                 #image_pair = image_ids.reshape([-1,config.NUM_VIEWS])
                 # Load image
-                print("processing image {} of {}".format(instance_index, instance_ids.size)) 
+                print("processing image {} of {}".format(view_index, view_ids.size))
                 image, image_meta, gt_class_id, gt_bbox, gt_mask =\
                     modellib.load_image_gt(dataset, config,
                                            image_ids[0], use_mini_mask=False)
@@ -627,7 +631,7 @@ if __name__ == '__main__':
             return APs
 
         # Pick a set of random images
-        APs = compute_batch_ap(instance_ids[:])
+        APs = compute_batch_ap(view_ids[:])
         np.save(model.log_dir, APs)
         print("mAP @ IoU=50: ", np.mean(APs))
         
