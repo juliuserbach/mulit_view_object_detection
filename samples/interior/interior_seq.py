@@ -386,11 +386,11 @@ if __name__ == '__main__':
                 STEPS_PER_EPOCH = 100
                 VALIDATION_STEPS = 20
                 NUM_CLASSES = len(selected_classes)  # background + num classes
-                vmin = -1.07
-                vmax = 1.07
-                nvox = 40
-                nvox_z = 40
-                GRID_DIST = False
+                vmin = -5.
+                vmax = 5.
+                GRID_DIST = 4.
+                nvox = 60
+                nvox_z = 60
                 vsize = float(vmax - vmin) / nvox
                 vox_bs = 1
                 im_bs = 1
@@ -423,13 +423,14 @@ if __name__ == '__main__':
             vox_bs = 1
             im_bs = 1
             samples = 10
-            NUM_VIEWS = 2
+            GRID_DIST = False
+            NUM_VIEWS = 1
             RECURRENT = False
             USE_RPN_ROIS = True
-            LEARNING_RATE = 0.01
-            GRID_REAS = 'ident'
+            LEARNING_RATE = 0.001
+            GRID_REAS = 'conv3d'
             BACKBONE = 'resnet50'
-            VANILLA = False
+            VANILLA = True
             
         config = InferenceConfig()
     config.display()
@@ -491,7 +492,7 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-    #model.load_weights(model_path, by_name=True, exclude=["backbone"])
+    model.load_weights(model_path, by_name=True, exclude=["backbone"])
 #     model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1"])
 #     model.load_weights(model_path, by_name=True, exclude=["backbone", "grid_reas_P2ident_conv", "grid_reas_P3ident_conv", "grid_reas_P4ident_conv", "grid_reas_P5ident_conv", "grid_reas_P6ident_conv"])
 
@@ -531,21 +532,21 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=150,
+                    epochs=1800,
                     layers='all')
 # #         Training - Stage 2
 #         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=400,
+                    epochs=2500,
                     layers='grid+')
 #         Training - Stage 3
 #         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=800,
+                    epochs=3200,
                     layers='4+')
 
         # Training - Stage 4
@@ -553,7 +554,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE/10,
-                    epochs=1500,
+                    epochs=4000,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -562,25 +563,26 @@ if __name__ == '__main__':
 
     elif args.command == "evaluate":
         dataset = InteriorDataset()
-        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
+        dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
         
         instance_ids = np.copy(list(dataset.instance_map.keys()))
+        view_ids = np.copy(list(dataset.view_map.keys()))
         
-        def compute_batch_ap(instance_ids):
+        def compute_batch_ap(view_ids):
             max_views = 2
             APs = []
-            for instance_index, instance_id in enumerate(instance_ids):
+            for view_index, view_id in enumerate(view_ids):
                 #instance_id = instance_ids[instance_index]               
-                image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
+                image_ids = dataset.load_view(max_views, main_image=view_id, rnd_state=0)
                 # skip instance if it has to few views (return of load_views=None)
                 if not image_ids:
                     continue
                 image_ids = image_ids[:config.NUM_VIEWS]
                 #image_pair = image_ids.reshape([-1,config.NUM_VIEWS])
                 # Load image
-                print("processing image {} of {}".format(instance_index, instance_ids.size)) 
+                print("processing image {} of {}".format(view_index, view_ids.size)) 
                 image, image_meta, gt_class_id, gt_bbox, gt_mask =\
                     modellib.load_image_gt(dataset, config,
                                            image_ids[0], use_mini_mask=False)
@@ -613,7 +615,7 @@ if __name__ == '__main__':
             return APs
 
         # Pick a set of random images
-        APs = compute_batch_ap(instance_ids[:])
+        APs = compute_batch_ap(view_ids[:])
         np.save(model.log_dir, APs)
         print("mAP @ IoU=50: ", np.mean(APs))
         
