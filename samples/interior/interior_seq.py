@@ -268,7 +268,23 @@ class InteriorDataset(utils.Dataset):
             # Call super class to return an empty mask
             return super(CocoDataset, self).load_mask(image_id)
 
-    
+
+    def load_depth(self, image_id, config):
+        """returns the depth image of the correpsonding image_id"""
+        depth_path = os.path.join(self.dataset_dir, self.image_info[image_id]["subfolder"], 'depth0/data',
+                     str(self.image_info[image_id]["image_sub_id"])+'.png')
+        depth_image = imageio.imread(depth_path)
+        depth_image = depth_image[:, :, np.newaxis]
+        depth_image, _, _, _, _ = utils.resize_image(
+            depth_image,
+            min_dim=20,
+            min_scale=config.IMAGE_MIN_SCALE,
+            max_dim=20,
+            mode=config.IMAGE_RESIZE_MODE)
+        depth_image = depth_image[:,:,0]
+        return depth_image
+
+
     def load_R(self, image_id):
         """returns the pose as R|t with shape 3x4
         """
@@ -376,7 +392,7 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         class TrainConfig(InteriorNetConfig):
-                TOP_DOWN_PYRAMID_SIZE = 64
+                TOP_DOWN_PYRAMID_SIZE = 72
 #                 FPN_CLASSIF_FC_LAYERS_SIZE = 128
 #                 POST_NMS_ROIS_INFERENCE = 1000
                 POST_NMS_ROIS_TRAINING = 500
@@ -390,19 +406,22 @@ if __name__ == '__main__':
                 vmax = 1.07
                 nvox = 40
                 nvox_z = 40
+                min_z = 0.5
+                max_z = 5.
                 GRID_DIST = False
                 vsize = float(vmax - vmin) / nvox
                 vox_bs = 1
                 im_bs = 1
-                samples = 10
-                NUM_VIEWS = 2
+                samples = 1
+                NUM_VIEWS = 1
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
                 GRID_REAS = 'ident'
                 BACKBONE = 'resnet50'
-                VANILLA = False
+                VANILLA = True
                 WEIGHT_DECAY = 0.0001
+                TRANSFORMER = False
         config = TrainConfig()
     else:
         class InferenceConfig(InteriorNetConfig):
@@ -422,14 +441,14 @@ if __name__ == '__main__':
             vsize = float(vmax - vmin) / nvox
             vox_bs = 1
             im_bs = 1
-            samples = 10
+            samples = 2
             NUM_VIEWS = 2
             RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.01
             GRID_REAS = 'ident'
             BACKBONE = 'resnet50'
-            VANILLA = False
+            VANILLA = True
             
         config = InferenceConfig()
     config.display()
@@ -455,22 +474,22 @@ if __name__ == '__main__':
         model_path = args.model
 
 #     # Load weights
-    #model_path_bb = os.path.join(args.logs, '../weights', 'mask_rcnn_interiornet_bb.h5')
-#     print("Loading weights ", model_path)
-#     from keras.engine import saving
-#     import h5py
-#     # f = h5py.File(os.path.join(model_path), mode='r')
-#     folder, weight_name = os.path.split(model_path)
-#     epoch = weight_name[-7:-3]
-#     model_path_bb = folder+'/backbone_callb_epoch_{}.h5'.format(epoch)
-#     f = h5py.File(os.path.join(model_path_bb), mode='r')
-#     #f = h5py.File(COCO_MODEL_PATH, mode='r')
-#     for layer in model.keras_model.layers:
-#         if layer.name == 'backbone':
-#             layers = layer.layers
-#             print(layer.__class__.__name__)
-#             saving.load_weights_from_hdf5_group_by_name(f, layer.layers)
-#             break
+#    model_path_bb = os.path.join(args.logs, '../weights', 'backbone_callb_epoch_1051.h5')
+# #     print("Loading weights ", model_path)
+    from keras.engine import saving
+    import h5py
+    # f = h5py.File(os.path.join(model_path), mode='r')
+    folder, weight_name = os.path.split(model_path)
+    epoch = weight_name[-7:-3]
+    model_path_bb = folder+'/backbone_callb_epoch_{}.h5'.format(epoch)
+    f = h5py.File(os.path.join(model_path_bb), mode='r')
+    #f = h5py.File(COCO_MODEL_PATH, mode='r')
+    for layer in model.keras_model.layers:
+        if layer.name == 'backbone':
+            layers = layer.layers
+            print(layer.__class__.__name__)
+            saving.load_weights_from_hdf5_group_by_name(f, layer.layers)
+            break
 #     model_path_bb = os.path.join(ROOT_DIR, 'weights', 'mask_rcnn_interiornet_bb.h5', 'backbone_sep.h5')
 #     model.load_weights(model_path_bb, by_name=True)
 #     train_layers = 'grid+'
@@ -491,7 +510,7 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-    #model.load_weights(model_path, by_name=True, exclude=["backbone"])
+    model.load_weights(model_path, by_name=True, exclude=["backbone"])
 #     model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1"])
 #     model.load_weights(model_path, by_name=True, exclude=["backbone", "grid_reas_P2ident_conv", "grid_reas_P3ident_conv", "grid_reas_P4ident_conv", "grid_reas_P5ident_conv", "grid_reas_P6ident_conv"])
 
@@ -527,25 +546,20 @@ if __name__ == '__main__':
 
         # *** This training schedule is an example. Update to your needs ***
 
-        # Training - Stage 1
+        #Training - Stage 1
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=150,
-                    layers='all')
-# #         Training - Stage 2
-#         Finetune layers from ResNet stage 4 and up
-        print("Fine tune Resnet stage 4 and up")
-        model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=400,
+                    epochs=500,
                     layers='grid+')
+#         Training - Stage 2
+#         Finetune layers from ResNet stage 4 and up
 #         Training - Stage 3
 #         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=800,
+                    epochs=900,
                     layers='4+')
 
         # Training - Stage 4

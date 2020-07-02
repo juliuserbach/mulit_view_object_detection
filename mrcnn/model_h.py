@@ -419,18 +419,21 @@ def positional_encoding(positions, d_model):
     assert d_model % 3 == 0, "The depth of the model must be divisible by 3."
     num_pos_feats = d_model // 3
 
-    # reshape positions to batch_size, 3(x,y,z), N*im_bs
+    # reshape positions to batch_size, im_bs, N, 3
     positions_shape = tf.shape(positions)
-    positions = tf.transpose(positions, [0, 1, 2, 4, 3])
-    positions = tf.reshape(positions, [-1, 3])
-    x_embed, y_embed, z_embed = tf.meshgrid(positions[:, 0],
-                                            positions[:, 1],
-                                            positions[:, 2])
+    positions = tf.transpose(positions, [0, 1, 4, 2, 3])
+    positions = tf.reshape(positions, [positions_shape[0], positions_shape[1], -1, 3])
+    print("shape of positions: {}".format(positions.get_shape().as_list()))
+    # x_embed, y_embed, z_embed = tf.meshgrid(positions[:, 0],
+    #                                         positions[:, 1],
+    #                                         positions[:, 2])
+    x_embed, y_embed, z_embed = positions[..., 0], positions[..., 1], positions[..., 2]
+
     print("shape of x_embed: {}".format(x_embed.get_shape().as_list()))
-    grid_size = positions_shape[1]*positions_shape[2]*positions_shape[4]
-    x_embed = tf.reshape(x_embed, [positions_shape[0], grid_size, grid_size, grid_size])
-    y_embed = tf.reshape(y_embed, [positions_shape[0], grid_size, grid_size, grid_size])
-    z_embed = tf.reshape(z_embed, [positions_shape[0], grid_size, grid_size, grid_size])
+    # grid_size = positions_shape[1]*positions_shape[2]*positions_shape[4]
+    # x_embed = tf.reshape(x_embed, [positions_shape[0], grid_size, grid_size, grid_size])
+    # y_embed = tf.reshape(y_embed, [positions_shape[0], grid_size, grid_size, grid_size])
+    # z_embed = tf.reshape(z_embed, [positions_shape[0], grid_size, grid_size, grid_size])
     print("shape of x_embed: {}".format(x_embed.get_shape().as_list()))
     angle_rads_x = get_angles(x_embed[..., tf.newaxis],
                               tf.range(num_pos_feats)[tf.newaxis, ...],
@@ -444,42 +447,29 @@ def positional_encoding(positions, d_model):
     print("shape of angle_rads: {}".format(angle_rads_z.get_shape().as_list()))
     # apply sin to even indices in the array; 2i
     angle_rads_x = tf.stack([tf.math.sin(angle_rads_x[..., 0::2]),
-                            tf.math.cos(angle_rads_x[..., 1::2])], axis=5)
+                            tf.math.cos(angle_rads_x[..., 1::2])], axis=4)
     print("shape of angle_rads: {}".format(angle_rads_x.get_shape().as_list()))
     angle_rads_x = tf.reshape(angle_rads_x, (tf.shape(angle_rads_x)[0],
                                              tf.shape(angle_rads_x)[1],
                                              tf.shape(angle_rads_x)[2],
-                                             tf.shape(angle_rads_x)[3],
                                              -1))
     angle_rads_y = tf.stack([tf.math.sin(angle_rads_y[..., 0::2]),
-                            tf.math.cos(angle_rads_y[..., 1::2])], axis=5)
+                            tf.math.cos(angle_rads_y[..., 1::2])], axis=4)
     angle_rads_y = tf.reshape(angle_rads_y, (tf.shape(angle_rads_y)[0],
                                              tf.shape(angle_rads_y)[1],
                                              tf.shape(angle_rads_y)[2],
-                                             tf.shape(angle_rads_y)[3],
                                              -1))
     angle_rads_z = tf.stack([tf.math.sin(angle_rads_z[..., 0::2]),
-                            tf.math.cos(angle_rads_z[..., 1::2])], axis=5)
+                            tf.math.cos(angle_rads_z[..., 1::2])], axis=4)
     angle_rads_z = tf.reshape(angle_rads_z, (tf.shape(angle_rads_z)[0],
                                              tf.shape(angle_rads_z)[1],
                                              tf.shape(angle_rads_z)[2],
-                                             tf.shape(angle_rads_z)[3],
                                              -1))
     print("shape of angle_rads: {}".format(angle_rads_z.get_shape().as_list()))
-    # angle_rads_x[..., 0::2] = tf.math.sin(angle_rads_x[..., 0::2])
-    # angle_rads_y[..., 0::2] = tf.math.sin(angle_rads_y[..., 0::2])
-    # angle_rads_z[..., 0::2] = tf.math.sin(angle_rads_z[..., 0::2])
-    #
-    # # apply cos to odd indices in the array; 2i+1
-    # angle_rads_x[..., 1::2] = tf.math.cos(angle_rads_x[..., 1::2])
-    # angle_rads_y[..., 1::2] = tf.math.cos(angle_rads_y[..., 1::2])
-    # angle_rads_z[..., 1::2] = tf.math.cos(angle_rads_z[..., 1::2])
 
-    pos_encoding = tf.concat([angle_rads_x, angle_rads_y, angle_rads_z], axis=4)
+    pos_encoding = tf.concat([angle_rads_x, angle_rads_y, angle_rads_z], axis=3)
+    pos_encoding = tf.reshape(pos_encoding, [tf.shape(pos_encoding)[0], -1, d_model])
     # flatten into 1D
-    pos_encoding = tf.transpose(pos_encoding, [0, 4, 1, 2, 3])
-    pos_encoding = tf.reshape(pos_encoding, [tf.shape(pos_encoding)[0], tf.shape(pos_encoding)[1], -1])
-    pos_encoding = tf.transpose(pos_encoding, [0, 2, 1])
     print("pos_encoding: {}".format(pos_encoding.get_shape().as_list()))
     return pos_encoding
 
@@ -576,7 +566,6 @@ class MultiHeadAttention(KL.Layer):
                                       (batch_size, -1, self.d_model))  # (batch_size, seq_len_q, d_model)
 
         output = self.dense(concat_attention)  # (batch_size, seq_len_q, d_model)
-
         return output
 
 
@@ -644,30 +633,42 @@ class Transformer(KM.Model):
     def __init__(self, num_layers, d_model, num_heads, dff,
                  target_size, rate=0.1):
         super(Transformer, self).__init__()
-
+        self.target_size = target_size
+        self.d_model = d_model
         self.encoder = Encoder(num_layers, d_model, num_heads, dff,
                                rate)
-
         self.final_layer = KL.Dense(target_size)
+        #super(Transformer, self).__init__(**kwargs)
+
 
     def call(self, inputs, training, mask):
         inp, positions = inputs
         enc_output = self.encoder([inp, positions], training=training, mask=mask)  # (batch_size, inp_seq_len, d_model)
         enc_output = tf.transpose(enc_output, [0, 2, 1])
 
-        final_output = self.final_layer(enc_output)  # (batch_size, tar_seq_len, target_vocab_size)
-        final_output = tf.tranpose(final_output, [0, 2, 1])
+        final_output = self.final_layer(enc_output)  # (batch_size, d_model, 2D-size)
+        final_output = tf.transpose(final_output, [0, 2, 1])# (batch_size, 2D-size, d_model)
         return final_output
 
+    def compute_output_shape(self, input_shape):
+        inputs_shape, positions_shape = input_shape
+        return (inputs_shape[0], self.target_size, self.d_model)
 
-def transformer_encoder(feats, Rcam, Kmat, config, training, mask=None):
-    positions = unproj_vector([feats, Rcam, Kmat], config)
-    feats = tf.reshape(feats, [tf.shape(feats)[0], -1])
+
+def transformer_encoder(feats, Rcam, Kmat, depth, config, training, mask=None):
+    positions, feats = KL.Lambda(lambda x: unproj_vector(x, config))([feats, Rcam, Kmat, depth])
+    feats_shape = tf.shape(feats)
+    print("feats: {}".format(feats.get_shape().as_list()))
+    feats = KL.Lambda(lambda x: tf.transpose(x, [0, 1, 2, 4, 3, 5]))(feats) # switch x and y or height and widt to match with positions
+    feats = KL.Lambda(lambda x: tf.reshape(x, [feats_shape[0], -1, feats_shape[-1]]), name="vectorize_features")(feats)
     print("shape pos, feats: {}, {}".format(positions.get_shape().as_list(), feats.get_shape().as_list()))
     # if not mask:
     #     mask = tf.zeros(tf.shape(feats))
     transformer = Transformer(num_layers=6, d_model=72, num_heads=8, dff=256, target_size=400, rate=0.1)
     feats = transformer([feats, positions], training=training, mask=mask)
+    print("feats: {}".format(feats.get_shape().as_list()))
+    feats = KL.Lambda(lambda x: tf.reshape(x, [feats_shape[0], feats_shape[3], feats_shape[4], feats_shape[-1]]), name="unvectorize_features")(feats)
+    feats = KL.Lambda(lambda x: tf.transpose(x, [0, 2, 1, 3]))(feats)
     return feats
 
 
@@ -675,10 +676,11 @@ def transformer_encoder(feats, Rcam, Kmat, config, training, mask=None):
 #  Projective Geometry Layers
 ############################################################
 def unproj_vector(inputs, config):
-    feats, Rcam, Kmat = inputs
+    feats, Rcam, Kmat, depth = inputs
     bs, im_bs, fh, fw, fdim = feats.get_shape().as_list()
     print("feats shape: {}".format(feats.get_shape().as_list()))
     #im_bs = tf.shape(feats)[1]
+    im_bs = config.NUM_VIEWS
     bs = config.BATCH_SIZE
     #Rcam = collapse_dims(Rcam)
     print("Kmat shape: {}".format(Kmat.get_shape().as_list()))
@@ -707,22 +709,25 @@ def unproj_vector(inputs, config):
     # sample from different depths
     camera_coordinates = repeat_tensor(camera_coordinates, config.samples, rep_dim=2)
     rho = tf.linspace(config.min_z, config.max_z, config.samples)
-    camera_coordinates = camera_coordinates * rho[tf.newaxis, tf.newaxis, :, tf.newaxis,
-                                              tf.newaxis]
+    rho = tf.reshape(tf.transpose(depth, [0, 1, 3, 2]), [bs, im_bs, -1])
+    camera_coordinates = camera_coordinates * rho[:, :, tf.newaxis, tf.newaxis, :]
+    print("camera_coordinates shape: {}".format(camera_coordinates.get_shape().as_list()))
     camera_coordinates = tf.reshape(camera_coordinates, [bs, im_bs, config.samples, 3, npix])
     print("camera_coordinates shape: {}".format(camera_coordinates.get_shape().as_list()))
     camera_coordinates = tf.concat(
         [camera_coordinates, tf.ones([bs, im_bs, config.samples, 1, npix])],
         axis=-2)
-    # dimensions are now: bs, im_bs, different_depths, 4(x,y,z,1), npix
+    # dimensions are now: bs, im_bs, depth samples, 4(x,y,z,1), npix
     print("camera_coordinates shape: {}".format(camera_coordinates.get_shape().as_list()))
     #camera_coordinates = collapse_dims(camera_coordinates)
     Rcam = repeat_tensor(Rcam, config.samples, rep_dim=2)
     world_coordinates = tf.matmul(Rcam, camera_coordinates)
     world_coordinates = tf.reshape(world_coordinates, [bs, im_bs, config.samples, 3, npix])
     print("world_coordinates shape: {}".format(world_coordinates.get_shape().as_list()))
+    feats = repeat_tensor_tf(feats, nrep=config.samples, rep_dim=2)
+    print("feats shape: {}".format(feats.get_shape().as_list()))
     # dimensions are now: bs, im_bs, different_depths, 3(x,y,z), npix
-    return world_coordinates
+    return [world_coordinates, feats]
 
 def unproj_feat(inputs, config):
     feats, Rcam, Kmat = inputs
@@ -2824,7 +2829,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             view_id = view_ids[image_index]
 #             instance_id = instance_ids[instance_index]
 #             image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id)
-            image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id, rnd_state=rnd_state_sec_views)
+            image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id, rnd_state=None)
             # skip instance if it has to few views (return of load_views=None)
             if not image_ids:
                 continue
@@ -2838,6 +2843,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                               use_mini_mask=config.USE_MINI_MASK)
                 image = []
                 Rcam = []
+                depth_image = []
                 for i in range(actual_num_views):
                     image_t, _, _, _, _ = \
                     load_image_gt(dataset, config, image_ids[i], augment=augment,
@@ -2845,6 +2851,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                                   use_mini_mask=config.USE_MINI_MASK)
                     image.append(image_t)
                     Rcam.append(dataset.load_R(image_ids[i]))
+                    depth_image.append(dataset.load_depth(image_ids[i], config))
                 Kmat = dataset.K
             else:
                 _, image_meta, gt_class_ids, gt_boxes, gt_masks = \
@@ -2853,15 +2860,15 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                                 use_mini_mask=config.USE_MINI_MASK)
                 image = []
                 Rcam = []
-                
+                depth_image = []
                 for i in range(actual_num_views):
-                    
                     image_t, _, _, _, _ = \
                     load_image_gt(dataset, config, image_ids[i], augment=augment,
                                 augmentation=augmentation,
                                 use_mini_mask=config.USE_MINI_MASK)
                     image.append(image_t)
                     Rcam.append(dataset.load_R(image_ids[i]))
+                    depth_image.append(dataset.load_depth(image_ids[i], config))
                 Kmat = dataset.K
                 
             # Skip images that have no instances. This can happen in cases
@@ -2893,6 +2900,8 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                     [batch_size, config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4], dtype=rpn_bbox.dtype)
                 batch_images = np.zeros(
                     (batch_size, actual_num_views,) + image[0].shape, dtype=np.float32)
+                batch_depths = np.zeros(
+                    (batch_size, actual_num_views,) + depth_image[0].shape, dtype=np.float32)
                 batch_gt_class_ids = np.zeros(
                     (batch_size, config.MAX_GT_INSTANCES), dtype=np.int32)
                 batch_gt_boxes = np.zeros(
@@ -2930,7 +2939,8 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             batch_rpn_bbox[b] = rpn_bbox
             for i in range(actual_num_views):
                 batch_images[b, i] = mold_image(image[i].astype(np.float32), config)
-                batch_gt_R[b,i] = Rcam[i]
+                batch_gt_R[b, i] = Rcam[i]
+                batch_depths[b, i] = depth_image[i]
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
@@ -2951,7 +2961,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             # Batch full?
             if b >= batch_size:
                 inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
-                          batch_gt_class_ids, batch_gt_boxes, batch_gt_masks, batch_gt_R, batch_gt_Kmat]
+                          batch_gt_class_ids, batch_gt_boxes, batch_gt_masks, batch_gt_R, batch_gt_Kmat, batch_depths]
                 outputs = []
                 
                 if random_rois:
@@ -3027,6 +3037,8 @@ class MaskRCNN():
                               name="input_R")
         input_Kmat = KL.Input(shape=[3, 3],
                               name="input_Kmat")
+
+        input_depths = KL.Input(shape=[None, config.IMAGE_SHAPE[0]//32, config.IMAGE_SHAPE[1]//32], name='input_depths')
         if mode == "training":
             # RPN GT
             input_rpn_match = KL.Input(
@@ -3070,101 +3082,68 @@ class MaskRCNN():
         
         P2, P3, P4, P5, P6 = backbone_model(input_image)
 
-        #PG5 = transformer_encoder(P5, input_R, input_Kmat, config, training=True)
-#         P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)
-#         P3 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3)
-#         P4 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4)
-#         P5 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5)
-#         P6 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6)
-#         for i in range(1, num_views):
-#             P2_t, P3_t, P4_t, P5_t, P6_t = backbone_model(KL.Lambda(lambda x: x[:,i,:,:,:])(input_image))
-#             print("finished")
-#             P2_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2_t)
-#             P3_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3_t)
-#             P4_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4_t)
-#             P5_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5_t)
-#             P6_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6_t)
-#             print("P2_t: {}".format(P2_t.get_shape().as_list()))
-#             P2 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P2, P2_t])
-#             P3 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P3, P3_t])
-#             P4 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P4, P4_t])
-#             P5 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P5, P5_t])
-#             P6 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P6, P6_t])
-        
-        
-        
-        
-        #P2, P3, P4, P5, P6 = view_merger_model(input_image_0.get_shape().as_list()[1:], config)(input_image)
-        
-        print("P2_shape: {}".format(P2.get_shape().as_list()))
-#         P2_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_2')(P2)
-#         P3_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_3')(P3)
-#         P4_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_4')(P4)
-#         P5_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_5')(P5)
-#         P6_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_6')(P6)
-        P2_1 = P2
-        P3_1 = P3
-        P4_1 = P4
-        P5_1 = P5
-        P6_1 = P6
+        if config.TRANSFORMER:
+            if mode == "training":
+                print("training transformer")
+                PG5 = transformer_encoder(P5, input_R, input_Kmat, input_depths, config, training=True)
+            elif mode == "inference":
+                PG5 = transformer_encoder(P5, input_R, input_Kmat, input_depths, config, training=False)
+        else:
+            P2_1 = P2
+            P3_1 = P3
+            P4_1 = P4
+            P5_1 = P5
+            P6_1 = P6
 
-        P2 = KL.Lambda(lambda x: x[:,0,:,:,:])(P2)
-        P3 = KL.Lambda(lambda x: x[:,0,:,:,:])(P3)
-        P4 = KL.Lambda(lambda x: x[:,0,:,:,:])(P4)
-        P5 = KL.Lambda(lambda x: x[:,0,:,:,:])(P5)
-        P6 = KL.Lambda(lambda x: x[:,0,:,:,:])(P6)
+            P2 = KL.Lambda(lambda x: x[:,0,:,:,:])(P2)
+            P3 = KL.Lambda(lambda x: x[:,0,:,:,:])(P3)
+            P4 = KL.Lambda(lambda x: x[:,0,:,:,:])(P4)
+            P5 = KL.Lambda(lambda x: x[:,0,:,:,:])(P5)
+            P6 = KL.Lambda(lambda x: x[:,0,:,:,:])(P6)
 
-#         # Project feature maps into 3D-Space
-        PG2, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P2")([P2_1, input_R, input_Kmat])
-        PG3, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P3")([P3_1, input_R, input_Kmat])
-        PG4, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P4")([P4_1, input_R, input_Kmat])
-        PG5, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P5")([P5_1, input_R, input_Kmat])
-        PG6, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P6")([P6_1, input_R, input_Kmat])
-        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+    #         # Project feature maps into 3D-Space
+            PG2, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P2")([P2_1, input_R, input_Kmat])
+            PG3, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P3")([P3_1, input_R, input_Kmat])
+            PG4, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P4")([P4_1, input_R, input_Kmat])
+            PG5, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P5")([P5_1, input_R, input_Kmat])
+            PG6, grid_pos = KL.Lambda(lambda x: unproj_feat(x, self.config), name="unproj_P6")([P6_1, input_R, input_Kmat])
+            print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
-        PG2 = grid_reas(PG2, "grid_reas_P2", config)
-        PG3 = grid_reas(PG3, "grid_reas_P3", config)
-        PG4 = grid_reas(PG4, "grid_reas_P4", config)
-        PG5 = grid_reas(PG5, "grid_reas_P5", config)
-        PG6 = grid_reas(PG6, "grid_reas_P6", config)
-        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
-        PG2 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=160), name="projs_PG2")([PG2, grid_pos, input_R, input_Kmat])
-        PG3 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=80), name="projs_PG3")([PG3, grid_pos, input_R, input_Kmat])
-        PG4 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=40), name="projs_PG4")([PG4, grid_pos, input_R, input_Kmat])
-        PG5 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=20), name="projs_PG5")([PG5, grid_pos, input_R, input_Kmat])
-        PG6 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=10), name="projs_PG6")([PG6, grid_pos, input_R, input_Kmat])
-        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+            PG2 = grid_reas(PG2, "grid_reas_P2", config)
+            PG3 = grid_reas(PG3, "grid_reas_P3", config)
+            PG4 = grid_reas(PG4, "grid_reas_P4", config)
+            PG5 = grid_reas(PG5, "grid_reas_P5", config)
+            PG6 = grid_reas(PG6, "grid_reas_P6", config)
+            print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+            PG2 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=160), name="projs_PG2")([PG2, grid_pos, input_R, input_Kmat])
+            PG3 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=80), name="projs_PG3")([PG3, grid_pos, input_R, input_Kmat])
+            PG4 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=40), name="projs_PG4")([PG4, grid_pos, input_R, input_Kmat])
+            PG5 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=20), name="projs_PG5")([PG5, grid_pos, input_R, input_Kmat])
+            PG6 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=10), name="projs_PG6")([PG6, grid_pos, input_R, input_Kmat])
+            print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
-        PG2 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG2)
-        PG3 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG3)
-        PG4 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG4)
-        PG5 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG5)
-        PG6 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG6)
-        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+            PG2 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG2)
+            PG3 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG3)
+            PG4 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG4)
+            PG5 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG5)
+            PG6 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG6)
+            print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
-        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
-        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
+            PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
+            print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
-        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
-        PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
-        PG3 = depth_sampling(PG3, config, name='grid_reas_depth_PG3')
-        PG4 = depth_sampling(PG4, config, name='grid_reas_depth_PG4')
-        PG5 = depth_sampling(PG5, config, name='grid_reas_depth_PG5')
-        PG6 = depth_sampling(PG6, config, name='grid_reas_depth_PG6')
+            PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
+            PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
+            PG3 = depth_sampling(PG3, config, name='grid_reas_depth_PG3')
+            PG4 = depth_sampling(PG4, config, name='grid_reas_depth_PG4')
+            PG5 = depth_sampling(PG5, config, name='grid_reas_depth_PG5')
+            PG6 = depth_sampling(PG6, config, name='grid_reas_depth_PG6')
 
-
-#         PG2 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG2')(PG2)
-#         PG3 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG3')(PG3)
-#         PG4 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG4')(PG4)
-#         PG5 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG5')(PG5)
-#         PG6 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG6')(PG6)
-#         print("PG2_shape: {}".format(PG2.get_shape().as_list()))
-
-        PG2 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG2)
-        PG3 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG3)
-        PG4 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG4)
-        PG5 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG5)
-        PG6 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG6)
+            PG2 = KL.Lambda(lambda x: tf.transpose(x[:, :, :, :, 0], [0, 2, 3, 1]))(PG2)
+            PG3 = KL.Lambda(lambda x: tf.transpose(x[:, :, :, :, 0], [0, 2, 3, 1]))(PG3)
+            PG4 = KL.Lambda(lambda x: tf.transpose(x[:, :, :, :, 0], [0, 2, 3, 1]))(PG4)
+            PG5 = KL.Lambda(lambda x: tf.transpose(x[:, :, :, :, 0], [0, 2, 3, 1]))(PG5)
+            PG6 = KL.Lambda(lambda x: tf.transpose(x[:, :, :, :, 0], [0, 2, 3, 1]))(PG6)
 
         if not config.VANILLA:
             print("recurrent mrcnn")
@@ -3179,14 +3158,28 @@ class MaskRCNN():
             # mrcnn_feature_maps = [P2, P3, P4, P5]
             rpn_feature_maps = [PG2, PG3, PG4, PG5, PG6]
             mrcnn_feature_maps = [PG2, PG3, PG4, PG5]
+        elif config.TRANSFORMER:
+            P2 = KL.Lambda(lambda x: x[:, 0, :, :, :]*0.)(P2)
+            P3 = KL.Lambda(lambda x: x[:, 0, :, :, :]*0.)(P3)
+            P4 = KL.Lambda(lambda x: x[:, 0, :, :, :]*0.)(P4)
+            P5 = KL.Lambda(lambda x: x[:, 0, :, :, :])(P5)
+            P6 = KL.Lambda(lambda x: x[:, 0, :, :, :]*0.)(P6)
+            P5 = KL.Add()([PG5, P5])
+            rpn_feature_maps = [P2, P3, P4, P5, P6]
+            mrcnn_feature_maps = [P2, P3, P4, P5]
+            print("P2_shape: {}".format(P2.get_shape().as_list()))
+            print("P5_shape: {}".format(P5.get_shape().as_list()))
+            print("PG5_shape: {}".format(PG5.get_shape().as_list()))
         else:
             print("vanilla mrcnn")
+            P2 = KL.Lambda(lambda x: x * 0.)(P2)
+            P3 = KL.Lambda(lambda x: x * 0.)(P3)
+            P4 = KL.Lambda(lambda x: x * 0.)(P4)
+            P5 = KL.Lambda(lambda x: x)(P5)
+            P6 = KL.Lambda(lambda x: x * 0.)(P6)
             rpn_feature_maps = [P2, P3, P4, P5, P6]
             mrcnn_feature_maps = [P2, P3, P4, P5]
 
-        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
-        print("PG6_shape: {}".format(PG6.get_shape().as_list()))
-            
                 # Anchors
         if mode == "training":
             anchors = self.get_anchors(config.IMAGE_SHAPE)
@@ -3206,6 +3199,7 @@ class MaskRCNN():
         for p in rpn_feature_maps:
             print(p.get_shape().as_list())
             layer_outputs.append(rpn([p]))
+        print("layer_outputs: {}".format(layer_outputs[0][0].get_shape().as_list()))
         # Concatenate layer outputs
         # Convert from list of lists of level outputs to list of lists
         # of outputs across levels.
@@ -3221,6 +3215,7 @@ class MaskRCNN():
         # and zero padded.
         proposal_count = config.POST_NMS_ROIS_TRAINING if mode == "training"\
             else config.POST_NMS_ROIS_INFERENCE
+
         rpn_rois = ProposalLayer(
             proposal_count=proposal_count,
             nms_threshold=config.RPN_NMS_THRESHOLD,
@@ -3289,7 +3284,7 @@ class MaskRCNN():
 
             # Model
             inputs = [input_image, input_image_meta,
-                      input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks, input_R, input_Kmat]
+                      input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks, input_R, input_Kmat, input_depths]
             if not config.USE_RPN_ROIS:
                 inputs.append(input_rois)
             outputs = [rpn_class_logits, rpn_class, rpn_bbox,
@@ -3320,7 +3315,7 @@ class MaskRCNN():
                                               config.NUM_CLASSES,
                                               train_bn=config.TRAIN_BN)
 
-            model = KM.Model([input_image, input_image_meta, input_anchors, input_R, input_Kmat],
+            model = KM.Model([input_image, input_image_meta, input_anchors, input_R, input_Kmat, input_depths],
                              [detections, mrcnn_class, mrcnn_bbox,
                                  mrcnn_mask, rpn_rois, rpn_class, rpn_bbox, PG2, PG2_intermediate],
                              name='mask_rcnn')
@@ -3594,12 +3589,12 @@ class MaskRCNN():
         layer_regex = {
             # all layers but the backbone
             "heads": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
-            "grid+": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
+            "grid+": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)|(transformer\_.*)",
             "grid+-": r"(mrcnn\_.*)|(rpn\_.*)|(grid_reas\_.*)",
             "grid_only": r"(grid_reas\_.*)",
             # From a specific Resnet stage and up
             "3+": r"(res3.*)|(bn3.*)|(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
-            "4+": r"(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
+            "4+": r"(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)|(transformer\_.*)",
             "5+": r"(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
             # All layers
             "all": ".*",
@@ -3679,8 +3674,8 @@ class MaskRCNN():
             validation_data=val_generator,
             validation_steps=self.config.VALIDATION_STEPS,
             max_queue_size=10,
-            workers=1,
-            use_multiprocessing=False,
+            workers=workers,
+            use_multiprocessing=True,
         )
         self.epoch = max(self.epoch, epochs)
 
