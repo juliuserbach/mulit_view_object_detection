@@ -3062,13 +3062,11 @@ class MaskRCNN():
         batch_size, num_views, h, w, chn = input_image.get_shape().as_list()
         num_views = config.NUM_VIEWS
                            
-#         P2, P3, P4, P5, P6 = build_resnet_fpn(input_image, config)                   
+        P2, P3, P4, P5, P6 = build_resnet_fpn(input_image, config)
         
         input_image_0 = KL.Lambda(lambda x: x[:,0,:,:,:], name="pred_image_selection")(input_image)
 
-        backbone_model = view_merger_model(input_image.get_shape().as_list()[1:], config)
-        
-        P2, P3, P4, P5, P6 = backbone_model(input_image)
+
 
         #PG5 = transformer_encoder(P5, input_R, input_Kmat, config, training=True)
 #         P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)

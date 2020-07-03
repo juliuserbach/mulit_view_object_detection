@@ -392,7 +392,7 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         class TrainConfig(InteriorNetConfig):
-                TOP_DOWN_PYRAMID_SIZE = 64
+                TOP_DOWN_PYRAMID_SIZE = 72
 #                 FPN_CLASSIF_FC_LAYERS_SIZE = 128
 #                 POST_NMS_ROIS_INFERENCE = 1000
                 POST_NMS_ROIS_TRAINING = 500
@@ -418,7 +418,7 @@ if __name__ == '__main__':
                 vox_bs = 1
                 im_bs = 1
                 samples = 10
-                NUM_VIEWS = 2
+                NUM_VIEWS = 1
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
@@ -426,6 +426,7 @@ if __name__ == '__main__':
                 BACKBONE = 'resnet50'
                 VANILLA = False
                 WEIGHT_DECAY = 0.0001
+                TRANSFORMER = False
         config = TrainConfig()
     else:
         class InferenceConfig(InteriorNetConfig):
@@ -452,7 +453,7 @@ if __name__ == '__main__':
             LEARNING_RATE = 0.01
             GRID_REAS = 'ident'
             BACKBONE = 'resnet50'
-            VANILLA = False
+            VANILLA = Ttrue
             
         config = InferenceConfig()
     config.display()
@@ -514,7 +515,7 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-    #model.load_weights(model_path, by_name=True, exclude=["backbone"])
+    model.load_weights(model_path, by_name=True)
 #     model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1"])
 #     model.load_weights(model_path, by_name=True, exclude=["backbone", "grid_reas_P2ident_conv", "grid_reas_P3ident_conv", "grid_reas_P4ident_conv", "grid_reas_P5ident_conv", "grid_reas_P6ident_conv"])
 
@@ -549,12 +550,15 @@ if __name__ == '__main__':
 #         augmentation = imgaug.augmenters.Fliplr(0.5)
 
         # *** This training schedule is an example. Update to your needs ***
-
+        model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=500,
+                    layers='all')
         # Training - Stage 1
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=500,
+                    epochs=750,
                     layers='grid+')
 #         Training - Stage 2
 #         Finetune layers from ResNet stage 4 and up
@@ -563,7 +567,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=900,
+                    epochs=1000,
                     layers='4+')
 
         # Training - Stage 4
@@ -571,7 +575,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE/10,
-                    epochs=1500,
+                    epochs=1300,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
