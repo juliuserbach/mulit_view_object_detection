@@ -749,9 +749,7 @@ def unproj_feat(inputs, config):
     nR = feats_shape[0]
     _, fh, fw, fdim = tf_static_shape(feats)
     nR = num_views * config.BATCH_SIZE
-#         fh = feats.shape[1].value
-#         fw = feats.shape[2].value
-#         fdim = feats.shape[3].value
+
     rsz_h = float(fh) / config.IMAGE_SHAPE[0]   # image height
     rsz_w = float(fw) / config.IMAGE_SHAPE[1]   # image width
 
@@ -3020,10 +3018,10 @@ class MaskRCNN():
 
         # Inputs
         input_image = KL.Input(
-            shape=[None, config.IMAGE_SHAPE[0], config.IMAGE_SHAPE[1], config.IMAGE_SHAPE[2]], name="input_image")
+            shape=[config.NUM_VIEWS, config.IMAGE_SHAPE[0], config.IMAGE_SHAPE[1], config.IMAGE_SHAPE[2]], name="input_image")
         input_image_meta = KL.Input(shape=[config.IMAGE_META_SIZE],
                                     name="input_image_meta")
-        input_R = KL.Input(shape=[None, 3, 4],
+        input_R = KL.Input(shape=[config.NUM_VIEWS, 3, 4],
                               name="input_R")
         input_Kmat = KL.Input(shape=[3, 3],
                               name="input_Kmat")
@@ -3065,41 +3063,8 @@ class MaskRCNN():
         P2, P3, P4, P5, P6 = build_resnet_fpn(input_image, config)
         
         input_image_0 = KL.Lambda(lambda x: x[:,0,:,:,:], name="pred_image_selection")(input_image)
-
-
-
-        #PG5 = transformer_encoder(P5, input_R, input_Kmat, config, training=True)
-#         P2 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2)
-#         P3 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3)
-#         P4 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4)
-#         P5 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5)
-#         P6 = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6)
-#         for i in range(1, num_views):
-#             P2_t, P3_t, P4_t, P5_t, P6_t = backbone_model(KL.Lambda(lambda x: x[:,i,:,:,:])(input_image))
-#             print("finished")
-#             P2_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P2_t)
-#             P3_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P3_t)
-#             P4_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P4_t)
-#             P5_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P5_t)
-#             P6_t = KL.Lambda(lambda x: tf.expand_dims(x, axis=1))(P6_t)
-#             print("P2_t: {}".format(P2_t.get_shape().as_list()))
-#             P2 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P2, P2_t])
-#             P3 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P3, P3_t])
-#             P4 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P4, P4_t])
-#             P5 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P5, P5_t])
-#             P6 = KL.Lambda(lambda x: tf.concat([x[0], x[1]], axis=1))([P6, P6_t])
-        
-        
-        
-        
-        #P2, P3, P4, P5, P6 = view_merger_model(input_image_0.get_shape().as_list()[1:], config)(input_image)
         
         print("P2_shape: {}".format(P2.get_shape().as_list()))
-#         P2_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_2')(P2)
-#         P3_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_3')(P3)
-#         P4_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_4')(P4)
-#         P5_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_5')(P5)
-#         P6_t = KL.TimeDistributed(KL.Conv2D(64, (3,3), padding='same'), name='fpn_thin_6')(P6)
         P2_1 = P2
         P3_1 = P3
         P4_1 = P4
@@ -3150,14 +3115,6 @@ class MaskRCNN():
         PG5 = depth_sampling(PG5, config, name='grid_reas_depth_PG5')
         PG6 = depth_sampling(PG6, config, name='grid_reas_depth_PG6')
 
-
-#         PG2 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG2')(PG2)
-#         PG3 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG3')(PG3)
-#         PG4 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG4')(PG4)
-#         PG5 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG5')(PG5)
-#         PG6 = KL.ConvLSTM2D(64, (1,1), padding='same', return_sequences=False, name='grid_reas_depth_PG6')(PG6)
-#         print("PG2_shape: {}".format(PG2.get_shape().as_list()))
-
         PG2 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG2)
         PG3 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG3)
         PG4 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG4)
@@ -3166,36 +3123,26 @@ class MaskRCNN():
 
         if not config.VANILLA:
             print("recurrent mrcnn")
-            PG2 = KL.Add()([PG2, P2])
-            PG3 = KL.Add()([PG3, P3])
+#             PG2 = KL.Add()([PG2, P2])
+            PG2 = KL.Lambda(lambda x: x*0.)(PG2)
+            PG3 = KL.Lambda(lambda x: x*0.)(PG3)
+#             PG2 = KL.Lambda(lambda x: tf.zeros(shape=tf.shape(x)))(PG2)
+#             PG3 = KL.Lambda(lambda x: tf.zeros(shape=tf.shape(x)))(PG3)
+
+#             PG3 = KL.Add()([PG3, P3])
             PG4 = KL.Add()([PG4, P4])
             PG5 = KL.Add()([PG5, P5])
             PG6 = KL.Add()([PG6, P6])
-            #P5 = KL.Add()([PG5, P5])
 
-            # rpn_feature_maps = [P2, P3, P4, P5, P6]
-            # mrcnn_feature_maps = [P2, P3, P4, P5]
             rpn_feature_maps = [PG2, PG3, PG4, PG5, PG6]
             mrcnn_feature_maps = [PG2, PG3, PG4, PG5]
-        elif config.TRANSFORMER:
-            P2 = KL.Lambda(lambda x: x[:, 0, :, :, :]*0.)(P2)
-            P3 = KL.Lambda(lambda x: x[:, 0, :, :, :]*0.)(P3)
-            P4 = KL.Lambda(lambda x: x[:, 0, :, :, :]*0.)(P4)
-            P5 = KL.Lambda(lambda x: x[:, 0, :, :, :])(P5)
-            P6 = KL.Lambda(lambda x: x[:, 0, :, :, :]*0.)(P6)
-            P5 = KL.Add()([PG5, P5])
-            rpn_feature_maps = [P2, P3, P4, P5, P6]
-            mrcnn_feature_maps = [P2, P3, P4, P5]
-            print("P2_shape: {}".format(P2.get_shape().as_list()))
-            print("P5_shape: {}".format(P5.get_shape().as_list()))
-            print("PG5_shape: {}".format(PG5.get_shape().as_list()))
         else:
             print("vanilla mrcnn")
             P2 = KL.Lambda(lambda x: x * 0.)(P2)
             P3 = KL.Lambda(lambda x: x * 0.)(P3)
-            P4 = KL.Lambda(lambda x: x * 0.)(P4)
+            P4 = KL.Lambda(lambda x: x)(P4)
             P5 = KL.Lambda(lambda x: x)(P5)
-            P6 = KL.Lambda(lambda x: x * 0.)(P6)
+            P6 = KL.Lambda(lambda x: x)(P6)
             rpn_feature_maps = [P2, P3, P4, P5, P6]
             mrcnn_feature_maps = [P2, P3, P4, P5]
 

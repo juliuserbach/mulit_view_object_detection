@@ -392,7 +392,7 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         class TrainConfig(InteriorNetConfig):
-                TOP_DOWN_PYRAMID_SIZE = 72
+                TOP_DOWN_PYRAMID_SIZE = 64
 #                 FPN_CLASSIF_FC_LAYERS_SIZE = 128
 #                 POST_NMS_ROIS_INFERENCE = 1000
                 POST_NMS_ROIS_TRAINING = 500
@@ -402,23 +402,18 @@ if __name__ == '__main__':
                 STEPS_PER_EPOCH = 100
                 VALIDATION_STEPS = 20
                 NUM_CLASSES = len(selected_classes)  # background + num classes
-                vmin = -1.07
-                vmax = 1.07
                 nvox = 40
                 nvox_z = 40
                 min_z = 0.5
                 max_z = 5.
-                GRID_DIST = False
+                GRID_DIST = 6.
                 vmin = -5.
                 vmax = 5.
-                GRID_DIST = 4.
-                nvox = 60
-                nvox_z = 60
                 vsize = float(vmax - vmin) / nvox
                 vox_bs = 1
                 im_bs = 1
                 samples = 10
-                NUM_VIEWS = 1
+                NUM_VIEWS = 2
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
@@ -453,7 +448,7 @@ if __name__ == '__main__':
             LEARNING_RATE = 0.01
             GRID_REAS = 'ident'
             BACKBONE = 'resnet50'
-            VANILLA = Ttrue
+            VANILLA = True
             
         config = InferenceConfig()
     config.display()
@@ -515,9 +510,9 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
+#     model.load_weights(model_path, by_name=True, exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3", "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2", "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4", "mrcnn_mask_deconv"])
     model.load_weights(model_path, by_name=True)
-#     model.load_weights(model_path, by_name=True, exclude=["rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1"])
-#     model.load_weights(model_path, by_name=True, exclude=["backbone", "grid_reas_P2ident_conv", "grid_reas_P3ident_conv", "grid_reas_P4ident_conv", "grid_reas_P5ident_conv", "grid_reas_P6ident_conv"])
+#     
 
     
     # Train or evaluate
@@ -550,15 +545,11 @@ if __name__ == '__main__':
 #         augmentation = imgaug.augmenters.Fliplr(0.5)
 
         # *** This training schedule is an example. Update to your needs ***
-        model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=500,
-                    layers='all')
         # Training - Stage 1
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=750,
+                    epochs=300,
                     layers='grid+')
 #         Training - Stage 2
 #         Finetune layers from ResNet stage 4 and up
@@ -567,7 +558,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=1000,
+                    epochs=500,
                     layers='4+')
 
         # Training - Stage 4
@@ -575,7 +566,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE/10,
-                    epochs=1300,
+                    epochs=750,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -589,6 +580,7 @@ if __name__ == '__main__':
         dataset.prepare()
         
         instance_ids = np.copy(list(dataset.instance_map.keys()))
+        view_ids = np.copy(list(dataset.view_map.keys()))
         
         def compute_batch_ap(view_ids):
             max_views = 2
@@ -640,17 +632,18 @@ if __name__ == '__main__':
         print("mAP @ IoU=50: ", np.mean(APs))
         
     elif args.command == "visualize":
-        max_views = 4
+        max_views = 2
         dataset = InteriorDataset()
         dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
-        instance_ids = np.copy(list(dataset.instance_map.keys()))
+        view_ids = np.copy(list(dataset.view_map.keys()))
+        
         num_views_map = {1: 'NV1', 2: 'NV2', 3: 'NV3', 4: 'NV4'}
         SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results', num_views_map[config.NUM_VIEWS])
-        for instance_index, instance_id in enumerate(instance_ids):
+        for instance_index, instance_id in enumerate(view_ids):
             #instance_id = instance_ids[instance_index]               
-            image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
+            image_ids = dataset.load_view(max_views, main_image=view_id, rnd_state=1)
             # skip instance if it has to few views (return of load_views=None)
             if not image_ids:
                 continue
