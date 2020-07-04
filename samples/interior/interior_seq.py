@@ -406,14 +406,14 @@ if __name__ == '__main__':
                 nvox_z = 40
                 min_z = 0.5
                 max_z = 5.
-                GRID_DIST = 6.
+                GRID_DIST = 5.
                 vmin = -5.
                 vmax = 5.
                 vsize = float(vmax - vmin) / nvox
                 vox_bs = 1
                 im_bs = 1
-                samples = 10
-                NUM_VIEWS = 2
+                samples = 25
+                NUM_VIEWS = 2 
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
@@ -434,21 +434,24 @@ if __name__ == '__main__':
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
             NUM_CLASSES = len(selected_classes)  # background + num classes
-            vmin = -1.07
-            vmax = 1.07
             nvox = 40
             nvox_z = 40
+            min_z = 0.5
+            max_z = 5.
+            GRID_DIST = 5.
+            vmin = -5.
+            vmax = 5.
             vsize = float(vmax - vmin) / nvox
             vox_bs = 1
             im_bs = 1
-            samples = 10
+            samples = 25
             NUM_VIEWS = 2
             RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.01
             GRID_REAS = 'ident'
             BACKBONE = 'resnet50'
-            VANILLA = True
+            VANILLA = False
             
         config = InferenceConfig()
     config.display()
@@ -510,8 +513,8 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-#     model.load_weights(model_path, by_name=True, exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3", "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2", "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4", "mrcnn_mask_deconv"])
-    model.load_weights(model_path, by_name=True)
+    model.load_weights(model_path, by_name=True, exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3", "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2", "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4", "mrcnn_mask_deconv"])
+#     model.load_weights(model_path, by_name=True)
 #     
 
     
@@ -566,7 +569,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE/10,
-                    epochs=750,
+                    epochs=751,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -585,6 +588,7 @@ if __name__ == '__main__':
         def compute_batch_ap(view_ids):
             max_views = 2
             APs = []
+            APs_range = []
             for view_index, view_id in enumerate(view_ids):
                 #instance_id = instance_ids[instance_index]               
                 image_ids = dataset.load_view(max_views, main_image=view_id, rnd_state=0)
@@ -613,6 +617,7 @@ if __name__ == '__main__':
                     Rcam.append(dataset.load_R(image_id))
 
                 im = np.stack(im)
+#                 im[1,:,:,:] = im[1,:,:,:]*0.
                 Rcam = np.stack([Rcam])
                 Kmat = np.stack([Kmat])
                 # Run object detection
@@ -622,8 +627,14 @@ if __name__ == '__main__':
                 AP, precisions, recalls, overlaps =\
                     utils.compute_ap(gt_bbox, gt_class_id, gt_mask,
                                       r['rois'], r['class_ids'], r['scores'], r['masks'])
+                
+                AP_range = compute_ap_range(gt_bbox, gt_class_id, gt_mask,
+                                      r['rois'], r['class_ids'], r['scores'], r['masks'])
+                
                 APs.append(AP)
+                APs_range.append(AP_range)
                 print("meanAP: {}".format(np.mean(APs)))
+                print("AP_range: {}".format(AP_range))
             return APs
 
         # Pick a set of random images
