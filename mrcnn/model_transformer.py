@@ -534,7 +534,7 @@ class MultiHeadAttention(KL.Layer):
         self.wv = KL.Dense(d_model)
 
         self.dense = KL.Dense(d_model)
-
+        print("MultiHeadAttentio layer is built")
     def split_heads(self, x, batch_size):
         """Split the last dimension into (num_heads, depth).
         Transpose the result such that the shape is (batch_size, num_heads, seq_len, depth)
@@ -588,6 +588,7 @@ class EncoderLayer(KL.Layer):
 
         self.dropout1 = KL.Dropout(rate=rate)
         self.dropout2 = KL.Dropout(rate=rate)
+        print("encoder layer is built")
 
     def call(self, x, training, mask):
         attn_output = self.mha([x, x, x], mask=mask)  # (batch_size, input_seq_len, d_model)
@@ -638,7 +639,6 @@ class Transformer(KM.Model):
         self.encoder = Encoder(num_layers, d_model, num_heads, dff,
                                rate)
         self.final_layer = KL.Dense(target_size)
-        #super(Transformer, self).__init__(**kwargs)
 
 
     def call(self, inputs, training, mask):
@@ -3074,13 +3074,9 @@ class MaskRCNN():
         batch_size, num_views, h, w, chn = input_image.get_shape().as_list()
         num_views = config.NUM_VIEWS
                            
-#         P2, P3, P4, P5, P6 = build_resnet_fpn(input_image, config)                   
+        P2, P3, P4, P5, P6 = build_resnet_fpn(input_image, config)
         
         input_image_0 = KL.Lambda(lambda x: x[:,0,:,:,:], name="pred_image_selection")(input_image)
-
-        backbone_model = view_merger_model(input_image.get_shape().as_list()[1:], config)
-        
-        P2, P3, P4, P5, P6 = backbone_model(input_image)
 
         if config.TRANSFORMER:
             if mode == "training":

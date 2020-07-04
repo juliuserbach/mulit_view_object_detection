@@ -508,13 +508,13 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-    #model.load_weights(model_path, by_name=True)
-    model.load_weights(model_path, by_name=True,
-                       exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3",
-                                "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1",
-                                "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2",
-                                "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4",
-                                "mrcnn_mask_deconv"])
+    model.load_weights(model_path, by_name=True)
+    # model.load_weights(model_path, by_name=True,
+    #                    exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3",
+    #                             "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1",
+    #                             "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2",
+    #                             "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4",
+    #                             "mrcnn_mask_deconv"])
 
     
     # Train or evaluate
@@ -638,38 +638,41 @@ if __name__ == '__main__':
         print("mAP @ IoU=50: ", np.mean(APs))
         
     elif args.command == "visualize":
-        max_views = 4
+        max_views = 2
         dataset = InteriorDataset()
         dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
-        instance_ids = np.copy(list(dataset.instance_map.keys()))
+        view_ids = np.copy(list(dataset.view_map.keys()))
         num_views_map = {1: 'NV1', 2: 'NV2', 3: 'NV3', 4: 'NV4'}
         SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results', num_views_map[config.NUM_VIEWS])
-        for instance_index, instance_id in enumerate(instance_ids):
-            #instance_id = instance_ids[instance_index]               
-            image_ids = dataset.load_view(max_views, instance=instance_id, rnd_state=1)
+        SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results', 'transformer')
+        for view_index, view_id in enumerate(view_ids):
+            image_ids = dataset.load_view(max_views, main_image=view_id, rnd_state=1)
             # skip instance if it has to few views (return of load_views=None)
             if not image_ids:
                 continue
             # Load image
 
-            print("processing image {} of {}".format(instance_index, instance_ids.size)) 
+            print("processing image {} of {}".format(view_index, view_ids.size))
             image = dataset.load_image(image_ids[0])
             im = []
             Rcam = []
+            depth_images = []
             Kmat = dataset.K
             image_ids = image_ids[:config.NUM_VIEWS]
             for image_id in image_ids:
                 image = dataset.load_image(image_id)
                 im.append(image)
                 Rcam.append(dataset.load_R(image_id))
+                depth_images.append(dataset.load_depth(image_id, config))
 
             im = np.stack(im)
             Rcam = np.stack([Rcam])
             Kmat = np.stack([Kmat])
+            depths = np.stack([depth_images])
             # Run object detection
-            results = model.detect([im], Rcam, Kmat)
+            results = model.detect([im], Rcam, Kmat, depths)
             r = results[0]
             visualize.save_image(image_name = image_ids[0], 
                                  image = im[0], boxes = r['rois'],

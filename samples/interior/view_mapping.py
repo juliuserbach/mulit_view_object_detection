@@ -18,7 +18,7 @@ from mrcnn import utils
 ROOT_DIR = os.path.abspath("../../")
 
 subsets = ["train", "val", "test"]
-DATASET_DIR = "data/InteriorNet/data/HD7"
+DATASET_DIR = "data/InteriorNet/data/HD1"
 _, hd_folder = os.path.split(DATASET_DIR)
 print(hd_folder)
 
@@ -53,7 +53,10 @@ for subset in subsets:
         image_ids = list(coco.imgs.keys())
         image_names = os.listdir(os.path.join(scene_path, add_path, 'cam0/data'))
         # map timestamp to pose R
-        path_to_camera_pose = os.path.join(scene_path, 'cam0.render')
+        if hd_folder != 'HD7':
+            path_to_camera_pose = os.path.join(scene_path, 'velocity_angular_1_1/cam0.render')
+        else:
+            path_to_camera_pose = os.path.join(scene_path, 'cam0.render')
         camera_file = open(path_to_camera_pose,"r")   
         csvreader = csv.reader(camera_file, delimiter=' ')
         # skip header lines 
@@ -72,26 +75,31 @@ for subset in subsets:
                      [0, f, y0],
                      [0, 0, 1]])
 
-        vmax = 1.07
-        vmin = -1.07
+        vmax = 5.
+        vmin = -5.
         nvox = 10
         vsize = float(vmax - vmin) / nvox
         grid_range = np.arange(vmin + vsize / 2.0, vmax,
                                       vsize)
         grid_dist = 600/320 * vmax
+        grid_dist = 6.
         
         #select images with objects of interest inside
         valid_image = False     
         
         for i in image_ids:
             #timestamp = image_name[:-4]
-            timestamp = coco.imgs[i]['timestamp'] 
-            instance_mask_path = os.path.join(scene_path, 
+            timestamp = coco.imgs[i]['timestamp']
+            if hd_folder != 'HD7':
+                timestamp_path = "{:019d}".format(timestamp)
+            else:
+                timestamp_path = timestamp
+            instance_mask_path = os.path.join(scene_path,
                                                   label_path,
-                                                  str(timestamp)+'_instance.png')
+                                                  str(timestamp_path)+'_instance.png')
             nyu_mask_path = os.path.join(scene_path, 
                                          label_path,
-                                         str(timestamp)+'_nyu.png')
+                                         str(timestamp_path)+'_nyu.png')
             # Load images
             instance_im = imageio.imread(instance_mask_path)
             nyu_im = imageio.imread(nyu_mask_path)
@@ -121,13 +129,17 @@ for subset in subsets:
             for j in image_ids:
                 if j==i or not valid_image:
                     continue
-                timestamp = coco.imgs[j]['timestamp'] 
+                timestamp = coco.imgs[j]['timestamp']
+                if hd_folder != 'HD7':
+                    timestamp_path = "{:019d}".format(timestamp)
+                else:
+                    timestamp_path = timestamp
                 instance_mask_path = os.path.join(scene_path, 
                                                   label_path,
-                                                  str(timestamp)+'_instance.png')
+                                                  str(timestamp_path)+'_instance.png')
                 nyu_mask_path = os.path.join(scene_path, 
                                              label_path,
-                                             str(timestamp)+'_nyu.png')
+                                             str(timestamp_path)+'_nyu.png')
                 # Load images
                 instance_im = imageio.imread(instance_mask_path)
                 nyu_im = imageio.imread(nyu_mask_path)
@@ -165,7 +177,7 @@ for subset in subsets:
                     y_inside = np.where(np.logical_and(im_y > 0, im_y < 480), True, False)
                     voxel_visible = np.logical_and(y_inside, x_inside)
                     num_visible = voxel_visible.sum()
-                    if num_visible/nvox**3 > 0.50:
+                    if num_visible/nvox**3 > 0.2:
                         print("percentage of overlap: {}".format(num_visible/nvox**3))
                         if scene_name+'_id'+str(i) in mapping:
                             mapping[scene_name+'_id'+str(i)].append(scene_name+'_id'+str(j))
