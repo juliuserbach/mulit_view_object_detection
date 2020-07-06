@@ -94,10 +94,12 @@ class InteriorDataset(utils.Dataset):
         dataset_dir = "{}/{}".format(dataset_dir, subset)
         self.dataset_dir = dataset_dir
         
-        with open(os.path.join(dataset_dir,'instance_mapping.json')) as json_file:
-            self.instance_map = json.load(json_file)
-        with open(os.path.join(dataset_dir,'view_mapping.json')) as json_file:
-            self.view_map = json.load(json_file)
+        # with open(os.path.join(dataset_dir,'instance_mapping.json')) as json_file:
+        #     self.instance_map = json.load(json_file)
+        # with open(os.path.join(dataset_dir,'view_mapping.json')) as json_file:
+        #     self.view_map = json.load(json_file)
+        with open(os.path.join(dataset_dir, 'view_mapping_seq.json')) as json_file:
+            self.view_map_seq = json.load(json_file)
         
         #list of class names
 
@@ -169,7 +171,7 @@ class InteriorDataset(utils.Dataset):
                     time_to_pose.update({int(row[0]): row[1:]})
             else:
                 path_to_camera_pose = os.path.join(image_dir, 'cam0.render')
-                camera_file = open(path_to_camera_pose,"r")   
+                camera_file = open(path_to_camera_pose,"r")
                 csvreader = csv.reader(camera_file, delimiter=' ')
                 # skip header lines 
                 next(csvreader)
@@ -318,35 +320,48 @@ class InteriorDataset(utils.Dataset):
 #             out.append(image_id)
 #         return out
 
-    
-    def load_view(self, n, main_image=None, rnd_state=None):
-        """ takes number of views n and outputs n image ids of a random instance
-        fix rnd_state for evaluation purposes
-        """
-        if n < 0:  
-            max_views = 4
-        else:
-            max_views = n
-        max_views = 2
+    def load_view(self, n, main_image, rnd_state=None):
+        max_views = 5
         LocalProcRandGen = np.random.RandomState(rnd_state)
-        if not main_image:
-            main_image = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
-            print(main_image)
-            # assure that there are at least n different views of the same instance
-            while np.asarray(self.view_map[main_image]).shape[0] < max_views:
-                view = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
-        secondary_views = np.asarray(self.view_map[main_image])
-        num_available_views = secondary_views.shape[0]
-        if num_available_views < max_views:
-            return None
-        views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views-1, replace=False)
+        secondary_views = np.asarray(self.view_map_seq[main_image])
+        views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views - 1, replace=False)
         image_ids = secondary_views[views]
-        image_ids = image_ids[:n-1]
-        out = [self.image_from_source_map['interior.'+main_image]]
+        image_ids = image_ids[:n - 1]
+        out = [self.image_from_source_map['interior.' + main_image]]
         for image_id in image_ids:
-            image_id = self.image_from_source_map['interior.'+image_id]
+            image_id = self.image_from_source_map['interior.' + image_id]
             out.append(image_id)
         return out
+
+    
+    # def load_view(self, n, main_image=None, rnd_state=None):
+    #     """ takes number of views n and outputs n image ids of a random instance
+    #     fix rnd_state for evaluation purposes
+    #     """
+    #     if n < 0:
+    #         max_views = 4
+    #     else:
+    #         max_views = n
+    #     max_views = 2
+    #     LocalProcRandGen = np.random.RandomState(rnd_state)
+    #     if not main_image:
+    #         main_image = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
+    #         print(main_image)
+    #         # assure that there are at least n different views of the same instance
+    #         while np.asarray(self.view_map[main_image]).shape[0] < max_views:
+    #             view = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
+    #     secondary_views = np.asarray(self.view_map[main_image])
+    #     num_available_views = secondary_views.shape[0]
+    #     if num_available_views < max_views:
+    #         return None
+    #     views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views-1, replace=False)
+    #     image_ids = secondary_views[views]
+    #     image_ids = image_ids[:n-1]
+    #     out = [self.image_from_source_map['interior.'+main_image]]
+    #     for image_id in image_ids:
+    #         image_id = self.image_from_source_map['interior.'+image_id]
+    #         out.append(image_id)
+    #     return out
 
 ############################################################
 #  Training
@@ -392,7 +407,7 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         class TrainConfig(InteriorNetConfig):
-                TOP_DOWN_PYRAMID_SIZE = 64
+                TOP_DOWN_PYRAMID_SIZE = 128
 #                 FPN_CLASSIF_FC_LAYERS_SIZE = 128
 #                 POST_NMS_ROIS_INFERENCE = 1000
                 POST_NMS_ROIS_TRAINING = 500
@@ -407,9 +422,12 @@ if __name__ == '__main__':
                 min_z = 0.5
                 max_z = 5.
                 GRID_DIST = 5.
-                vmin = -5.
-                vmax = 5.
+                vmin = -2.5
+                vmax = 2.5
+                vmax_z = 10.
+                vmin_z = 1.
                 vsize = float(vmax - vmin) / nvox
+                vsize_z = float(vmax_z - vmin_z) / nvox_z
                 vox_bs = 1
                 im_bs = 1
                 samples = 25
@@ -514,7 +532,7 @@ if __name__ == '__main__':
 #     model.set_trainable(layers)
     print(model_path)
     model.load_weights(model_path, by_name=True, exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3", "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2", "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4", "mrcnn_mask_deconv"])
-#     model.load_weights(model_path, by_name=True)
+#    model.load_weights(model_path, by_name=True)
 #     
 
     
@@ -552,7 +570,7 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=300,
+                    epochs=301,
                     layers='grid+')
 #         Training - Stage 2
 #         Finetune layers from ResNet stage 4 and up
@@ -561,7 +579,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=500,
+                    epochs=501,
                     layers='4+')
 
         # Training - Stage 4

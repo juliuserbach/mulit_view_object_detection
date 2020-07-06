@@ -756,7 +756,7 @@ def unproj_feat(inputs, config):
     _, fh, fw, fdim = tf_static_shape(feats)
     nR = num_views * config.BATCH_SIZE
 
-    rsz_h = float(fh) / 640.   # image height
+    rsz_h = float(fh) / config.IMAGE_SHAPE[0]   # image height
     rsz_w = float(fw) / config.IMAGE_SHAPE[1]   # image width
 
     # Create Voxel grid 
@@ -2825,9 +2825,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     rnd_state_sec_views = 0
     random_shuffle = np.random.RandomState(seed=rnd_state)
 #     instance_ids = np.copy(list(dataset.instance_map.keys()))
-#     view_ids = np.copy(list(dataset.view_map.keys()))
-#     instance_ids = np.copy(list(dataset.instance_map.keys()))
-    image_ids_seq = np.copy(list(dataset.image_ids))
+    view_ids = np.copy(list(dataset.view_map_seq.keys()))
     error_count = 0
     if not config.USE_RPN_ROIS:
         random_rois = config.POST_NMS_ROIS_TRAINING
@@ -2847,27 +2845,25 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
         try:
             # Increment index to pick next image. Shuffle if at the start of an epoch.
 #             instance_index = (instance_index + 1) % len(instance_ids)
-            image_index = (image_index + 1) % len(image_ids_seq)
-            #image_index = (image_index + 1) % len(view_ids)
+            #image_index = (image_index + 1) % len(image_ids_seq)
+            image_index = (image_index + 1) % len(view_ids)
 #             if shuffle and instance_index == 0:
 #                 random_shuffle.shuffle(instance_ids)
             if shuffle and image_index == 0:
                 rnd_state_sec_views += 1
-#                 random_shuffle.shuffle(view_ids)
-                random_shuffle.shuffle(image_ids_seq)
+                random_shuffle.shuffle(view_ids)
 
             # Get GT bounding boxes and masks for image.
-#             view_id = view_ids[image_index]
-            image_id = image_ids_seq[image_index]
-            image_ids = [image_id, image_id + 10]
+            view_id = view_ids[image_index]
+            #image_ids = [image_id, image_id + 10]
 #             instance_id = instance_ids[instance_index]
 #             image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id)
-            #image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id, rnd_state=rnd_state_sec_views)
+            image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id, rnd_state=rnd_state_sec_views)
             # skip instance if it has to few views (return of load_views=None)
-#             if not image_ids:
-#                 continue
+            if not image_ids:
+                continue
             actual_num_views = len(image_ids)
-            #image_id = image_ids[0]
+            image_id = image_ids[0]
             #image_ids[0] = image_id + 1
             # If the image source is not to be augmented pass None as augmentation
             if dataset.image_info[image_id]['source'] in no_augmentation_sources:
@@ -2988,7 +2984,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             for i in range(actual_num_views):
                 batch_images[b, i] = mold_image(image[i].astype(np.float32), config)
                 batch_gt_R[b,i] = Rcam[i]
-            batch_images[:, 0] = batch_images[:, 0]*0. 
+            #batch_images[:, 0] = batch_images[:, 0]*0.
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
@@ -3034,7 +3030,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
 #                 dataset.image_info[image_id]))
             print("Error occured at image_id: {}".format(image_id))
             error_count += 1
-            if error_count > 5000:
+            if error_count > 5:
                 raise
 
 
