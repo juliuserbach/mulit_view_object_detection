@@ -756,14 +756,16 @@ def unproj_feat(inputs, config):
     _, fh, fw, fdim = tf_static_shape(feats)
     nR = num_views * config.BATCH_SIZE
 
-    rsz_h = float(fh) / config.IMAGE_SHAPE[0]   # image height
+    rsz_h = float(fh) / 640.   # image height
     rsz_w = float(fw) / config.IMAGE_SHAPE[1]   # image width
 
     # Create Voxel grid 
     # !! change coordinates, grid has to be rotated, P-C?!!
     grid_range = tf.range(config.vmin + config.vsize / 2.0, config.vmax,
                                   config.vsize)
-    grid_range_z = tf.range(-(config.nvox_z-1)*0.5*config.vsize, (config.nvox_z-1)*0.5*config.vsize+config.vsize/2, config.vsize)
+    grid_range_z = tf.range(-(config.nvox_z-1)*0.5*config.vsize_z, (config.nvox_z-1)*0.5*config.vsize_z+config.vsize_z/2, config.vsize_z)
+    grid_range_z = tf.range(config.vmin_z + config.vsize_z / 2.0, config.vmax_z,
+                                  config.vsize_z)
     grid_range = tf.expand_dims(grid_range, 0)
     grid_range_z = tf.expand_dims(grid_range_z, 0)
     grid_range = tf.tile(grid_range, [config.BATCH_SIZE, 1])
@@ -774,19 +776,23 @@ def unproj_feat(inputs, config):
     else: 
         grid_dist = 600/320 * config.vmax
     grid_position = K.dot(tf.reshape(Rcam_old[:,0,:,:], [-1, 3, 4]), tf.constant([0.0, 0.0, grid_dist, 1.0], shape=[4,1]) )
-    grid_position = tf.reshape(grid_position, [config.BATCH_SIZE, 3])
+    grid_position = tf.constant([0.0, 0.0, config.vmin_z + config.vsize_z / 2.0], shape=[3,1])
     print("grid position shape: {}".format(grid_position.get_shape().as_list()))
     # adjust grid coordinates to world frame
     grid = tf.stack(
-        tf.meshgrid(grid_range + grid_position[:,0, tf.newaxis],
-                    grid_range + grid_position[:,1, tf.newaxis],
-                    grid_range_z + grid_position[:,2, tf.newaxis]))# set z-offset from camera so that the grid side length equals the visible width
+        tf.meshgrid(grid_range,
+                    grid_range,
+                    grid_range_z))# set z-offset from camera so that the grid side length equals the visible width
     rs_grid = tf.reshape(grid, [3, -1])
     nV = tf.shape(rs_grid)[1]
     rs_grid = tf.concat([rs_grid, tf.ones([1, nV])], axis=0)
     print("grid shape: {}".format(rs_grid.get_shape().as_list()))
 
-    # Project grid/
+    # Project grid
+    # Project grid from main view camera coordinates into world coordinates
+    rs_grid = tf.matmul(tf.reshape(Rcam_old[:,0,:,:], [-1, 4]), rs_grid)
+    print("grid shape: {}".format(rs_grid.get_shape().as_list()))
+    rs_grid = tf.concat([rs_grid, tf.ones([1, nV])], axis=0)
     im_p = tf.matmul(tf.reshape(KRcam, [-1, 4]), rs_grid) 
     im_x, im_y, im_z = im_p[::3, :], im_p[1::3, :], im_p[2::3, :]
     im_x = (im_x / im_z) * rsz_w
@@ -835,6 +841,7 @@ def unproj_feat(inputs, config):
     Ibilin = tf.transpose(Ibilin, [0, 1, 3, 2, 4, 5])
 
     return [Ibilin, grid_position]
+    
 
 
 def proj_grid(inputs, config, proj_size):
@@ -842,12 +849,16 @@ def proj_grid(inputs, config, proj_size):
     """
     grid, grid_pos, Rcam, Kmat = inputs
     rsz_factor = float(proj_size) / config.IMAGE_SHAPE[0]   # image height
+    rsz_h = float(proj_size) / 480.   # image height
+    rsz_w = float(proj_size) / 640.   # image height
+    rsz_matrix = tf.constant([[rsz_w, 0., 0.], 
+                 [0., rsz_h, 0.],
+                 [0., 0., 1.]])
+#     Kmat = tf.matmul(rsz_matrix[tf.newaxis, :,:], Kmat)
     Kmat = Kmat * rsz_factor
-
     Kmat = tf.expand_dims(Kmat, axis=1)
    
     bs, h, w, d, ch = grid.get_shape().as_list()
-#     im_bs = Rcam.get_shape().as_list()[1]
 
     Rcam = tf.reshape(Rcam[:,0,:,:], [bs, 1, 3, 4])
     
@@ -861,7 +872,7 @@ def proj_grid(inputs, config, proj_size):
             rs_grid = tf.reshape(im_grid, [2, -1])
             # Append rsz_factor to ensure that
             rs_grid = tf.concat(
-                [rs_grid, tf.ones((1, npix)) * rsz_factor], axis=0)
+                [rs_grid, tf.ones((1, npix))*rsz_factor], axis=0)
             rs_grid = tf.reshape(rs_grid, [1, 1, 3, npix])
             rs_grid = tf.tile(rs_grid, [bs, 1, 1, 1])#[bs, im_bs, 1, 1]
 
@@ -876,7 +887,7 @@ def proj_grid(inputs, config, proj_size):
             else: 
                 grid_dist = 600/320 * config.vmax
             z_samples = tf.linspace(grid_dist - config.vmax*0.8, grid_dist + config.vmax*0.8, config.samples)
-
+            z_samples = tf.linspace(config.vmin_z + config.vsize_z / 2.0, config.vmax_z-config.vsize_z / 2.0, config.samples)
             # Transform Xc to Xw using transpose of rotation matrix
             Xc = repeat_tensor(Xc, config.samples, rep_dim=2)
             
@@ -888,15 +899,28 @@ def proj_grid(inputs, config, proj_size):
                 axis=-2)
             
         with tf.name_scope('Cam2World'):
+            Rt = tf.matrix_transpose(Rcam[:, :, :, :3])
+            tr = tf.expand_dims(Rcam[:, :, :, 3], axis=-1)
+            Rcam_T = tf.concat([Rt, -tf.matmul(Rt, tr)], axis=3)
+            print("Rcam_T shape: {}".format(Rcam_T.get_shape().as_list()))
             Rcam = repeat_tensor(Rcam, config.samples, rep_dim=2)
             Xw = tf.matmul(Rcam, Xc)
+            print("Xw shape: {}".format(Xw.get_shape().as_list()))
+            # Project world coordinates into main view camera coordinates
+            print("Rcam shape: {}".format(Rcam.get_shape().as_list()))
+            Xw = tf.concat(
+                [Xw, tf.ones([bs, 1, config.samples, 1, npix])],#[bs, im_bs, 1, 1]
+                axis=-2)
+            Rcam_T = repeat_tensor(Rcam_T, config.samples, rep_dim=2)
+            Xw = tf.matmul(Rcam_T, Xw)
+            print("Xw shape: {}".format(Xw.get_shape().as_list()))
             # Transform world points to grid locations to sample from
-            grid_pos = repeat_tensor(grid_pos, npix, rep_dim=-1)
+            grid_pos = grid_pos[tf.newaxis, tf.newaxis, tf.newaxis, :] 
             # take non symmetric grid into account
-            vmin = tf.reshape(tf.constant([config.vmin, config.vmin, -config.nvox_z*0.5*config.vsize]), [1, 1, 3, 1])
-            vmax = tf.reshape(tf.constant([config.vmax, config.vmax, config.nvox_z*0.5*config.vsize]), [1, 1, 3, 1])
+            vmin = tf.reshape(tf.constant([config.vmin, config.vmin, config.vmin_z + config.vsize_z / 2.0]), [1, 1, 3, 1])
+            vmax = tf.reshape(tf.constant([config.vmax, config.vmax, config.vmax_z]), [1, 1, 3, 1])
             nvox = tf.reshape(tf.constant([config.nvox*1.0, config.nvox*1.0, config.nvox_z*1.0]), [1, 1, 3, 1]) 
-            Xw = (Xw - grid_pos - vmin)
+            Xw = (Xw  - vmin)
             Xw = (Xw / (vmax - vmin)) * nvox
 
             # bs, im_bs, samples, npix, 3
@@ -924,7 +948,6 @@ def proj_grid(inputs, config, proj_size):
             ])
             ray_slices = tf.transpose(g_val, [0, 1, 2, 3, 4])
             return ray_slices
-
             
 def repeat_tensor_tf(T, nrep, rep_dim=1):
         repT = tf.expand_dims(T, rep_dim)
@@ -2802,8 +2825,9 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     rnd_state_sec_views = 0
     random_shuffle = np.random.RandomState(seed=rnd_state)
 #     instance_ids = np.copy(list(dataset.instance_map.keys()))
-    view_ids = np.copy(list(dataset.view_map.keys()))
-    instance_ids = np.copy(list(dataset.instance_map.keys()))
+#     view_ids = np.copy(list(dataset.view_map.keys()))
+#     instance_ids = np.copy(list(dataset.instance_map.keys()))
+    image_ids_seq = np.copy(list(dataset.image_ids))
     error_count = 0
     if not config.USE_RPN_ROIS:
         random_rois = config.POST_NMS_ROIS_TRAINING
@@ -2822,24 +2846,29 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     while True:
         try:
             # Increment index to pick next image. Shuffle if at the start of an epoch.
-            instance_index = (instance_index + 1) % len(instance_ids)
-            image_index = (image_index + 1) % len(view_ids)
+#             instance_index = (instance_index + 1) % len(instance_ids)
+            image_index = (image_index + 1) % len(image_ids_seq)
+            #image_index = (image_index + 1) % len(view_ids)
 #             if shuffle and instance_index == 0:
 #                 random_shuffle.shuffle(instance_ids)
             if shuffle and image_index == 0:
                 rnd_state_sec_views += 1
-                random_shuffle.shuffle(view_ids)
+#                 random_shuffle.shuffle(view_ids)
+                random_shuffle.shuffle(image_ids_seq)
 
             # Get GT bounding boxes and masks for image.
-            view_id = view_ids[image_index]
+#             view_id = view_ids[image_index]
+            image_id = image_ids_seq[image_index]
+            image_ids = [image_id, image_id + 10]
 #             instance_id = instance_ids[instance_index]
 #             image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id)
-            image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id, rnd_state=rnd_state_sec_views)
+            #image_ids = dataset.load_view(config.NUM_VIEWS, main_image=view_id, rnd_state=rnd_state_sec_views)
             # skip instance if it has to few views (return of load_views=None)
-            if not image_ids:
-                continue
+#             if not image_ids:
+#                 continue
             actual_num_views = len(image_ids)
-            image_id = image_ids[0]
+            #image_id = image_ids[0]
+            #image_ids[0] = image_id + 1
             # If the image source is not to be augmented pass None as augmentation
             if dataset.image_info[image_id]['source'] in no_augmentation_sources:
                 _, image_meta, gt_class_ids, gt_boxes, gt_masks = \
@@ -2959,6 +2988,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             for i in range(actual_num_views):
                 batch_images[b, i] = mold_image(image[i].astype(np.float32), config)
                 batch_gt_R[b,i] = Rcam[i]
+            batch_images[:, 0] = batch_images[:, 0]*0. 
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
@@ -3138,7 +3168,6 @@ class MaskRCNN():
         PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
         print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
-        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
         PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
         PG3 = depth_sampling(PG3, config, name='grid_reas_depth_PG3')
         PG4 = depth_sampling(PG4, config, name='grid_reas_depth_PG4')
