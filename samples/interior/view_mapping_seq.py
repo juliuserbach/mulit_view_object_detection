@@ -24,7 +24,7 @@ for subset in subsets:
     mapping = {}
     scene_paths = glob.glob(os.path.join(ROOT_DIR, DATASET_DIR, subset,'*'))
     for scene_path in scene_paths:
-        if bool(re.search('.json' ,scene_path)):
+        if bool(re.search('.json' , scene_path)):
             continue
 
         scene_name = os.path.basename(scene_path)
@@ -35,9 +35,9 @@ for subset in subsets:
             image_ids.extend(list(coco.getImgIds(catIds=[id])))
         # Remove duplicates
         image_ids = list(set(image_ids))
-
-        for i, image_id in enumerate(image_ids[4:-4]):
-            if image_ids[i+4] - image_ids[i] > 10 or image_ids[i+4+4] - image_ids[i+4] > 10:
+        view_range = 20
+        for i, image_id in enumerate(image_ids[view_range:]):
+            if image_ids[i+view_range] - image_ids[i] > view_range + 10:
                 continue
             timestamp = lambda x: "{:019d}".format(coco.imgs[x]['timestamp'])
             # instance_mask_path = os.path.join(scene_path,
@@ -60,8 +60,8 @@ for subset in subsets:
             #         valid_image = True
             #         break
             # if valid_image:
-            list_of_neighbors = [scene_name + '_id' + timestamp(j) for j in image_ids[i+4-4:i+4+4] if j != image_id]
-            print(image_id, list_of_neighbors)
+            list_of_neighbors = [scene_name + '_id' + timestamp(j) for j in image_ids[i:i+view_range] if j != image_id]
+            print(image_id, len(list_of_neighbors))
             mapping.update({scene_name + '_id' + timestamp(image_id): list_of_neighbors})
 
     with open('{}.json'.format(os.path.join(ROOT_DIR, DATASET_DIR, subset, 'view_mapping_seq')), 'w') as outfile:

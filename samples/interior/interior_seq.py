@@ -322,11 +322,13 @@ class InteriorDataset(utils.Dataset):
 
     def load_view(self, n, main_image, rnd_state=None):
         max_views = 5
+        num_skip = 5
         LocalProcRandGen = np.random.RandomState(rnd_state)
         secondary_views = np.asarray(self.view_map_seq[main_image])
-        views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views - 1, replace=False)
-        image_ids = secondary_views[views]
-        image_ids = image_ids[:n - 1]
+        #views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views - 1, replace=False)
+        #image_ids = secondary_views[views]
+        image_ids = secondary_views[::-1]
+        image_ids = image_ids[num_skip:n*num_skip:num_skip]
         out = [self.image_from_source_map['interior.' + main_image]]
         for image_id in image_ids:
             image_id = self.image_from_source_map['interior.' + image_id]
@@ -407,7 +409,7 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         class TrainConfig(InteriorNetConfig):
-                TOP_DOWN_PYRAMID_SIZE = 128
+                TOP_DOWN_PYRAMID_SIZE = 64
 #                 FPN_CLASSIF_FC_LAYERS_SIZE = 128
 #                 POST_NMS_ROIS_INFERENCE = 1000
                 POST_NMS_ROIS_TRAINING = 500
@@ -431,11 +433,11 @@ if __name__ == '__main__':
                 vox_bs = 1
                 im_bs = 1
                 samples = 25
-                NUM_VIEWS = 2 
+                NUM_VIEWS = 2
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
-                GRID_REAS = 'ident'
+                GRID_REAS = 'add'
                 BACKBONE = 'resnet50'
                 VANILLA = False
                 WEIGHT_DECAY = 0.0001
@@ -457,11 +459,12 @@ if __name__ == '__main__':
             min_z = 0.5
             max_z = 5.
             GRID_DIST = 5.
-            vmin = -5.
-            vmax = 5.
+            vmin = -2.5
+            vmax = 2.5
+            vmax_z = 10.
+            vmin_z = 1.
             vsize = float(vmax - vmin) / nvox
-            vox_bs = 1
-            im_bs = 1
+            vsize_z = float(vmax_z - vmin_z) / nvox_z
             samples = 25
             NUM_VIEWS = 2
             RECURRENT = False
@@ -532,7 +535,7 @@ if __name__ == '__main__':
 #     model.set_trainable(layers)
     print(model_path)
     model.load_weights(model_path, by_name=True, exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3", "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2", "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4", "mrcnn_mask_deconv"])
-#    model.load_weights(model_path, by_name=True)
+    #model.load_weights(model_path, by_name=True)
 #     
 
     
@@ -570,7 +573,7 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=301,
+                    epochs=501,
                     layers='grid+')
 #         Training - Stage 2
 #         Finetune layers from ResNet stage 4 and up
@@ -579,15 +582,15 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=501,
+                    epochs=1001,
                     layers='4+')
-
-        # Training - Stage 4
-#         Finetune layers from ResNet stage 4 and up
+#
+#         # Training - Stage 4
+# #         Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE/10,
-                    epochs=751,
+                    epochs=1501,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -596,15 +599,15 @@ if __name__ == '__main__':
 
     elif args.command == "evaluate":
         dataset = InteriorDataset()
-        dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list,
+        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list,
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
         
-        instance_ids = np.copy(list(dataset.instance_map.keys()))
-        view_ids = np.copy(list(dataset.view_map.keys()))
+        #instance_ids = np.copy(list(dataset.instance_map.keys()))
+        view_ids = np.copy(list(dataset.view_map_seq.keys()))
         
         def compute_batch_ap(view_ids):
-            max_views = 2
+            max_views = 5
             APs = []
             APs_range = []
             for view_index, view_id in enumerate(view_ids):
@@ -635,7 +638,7 @@ if __name__ == '__main__':
                     Rcam.append(dataset.load_R(image_id))
 
                 im = np.stack(im)
-#                 im[1,:,:,:] = im[1,:,:,:]*0.
+                im[0,:,:,:] = im[0,:,:,:]*0.
                 Rcam = np.stack([Rcam])
                 Kmat = np.stack([Kmat])
                 # Run object detection
@@ -646,19 +649,21 @@ if __name__ == '__main__':
                     utils.compute_ap(gt_bbox, gt_class_id, gt_mask,
                                       r['rois'], r['class_ids'], r['scores'], r['masks'])
                 
-                AP_range = compute_ap_range(gt_bbox, gt_class_id, gt_mask,
-                                      r['rois'], r['class_ids'], r['scores'], r['masks'])
+                #AP_range = utils.compute_ap_range(gt_bbox, gt_class_id, gt_mask,
+                 #                     r['rois'], r['class_ids'], r['scores'], r['masks'], verbose=0)
                 
                 APs.append(AP)
-                APs_range.append(AP_range)
+                #APs_range.append(AP_range)
                 print("meanAP: {}".format(np.mean(APs)))
-                print("AP_range: {}".format(AP_range))
-            return APs
+                #print("AP_range: {}".format(np.mean(APs_range)))
+            return APs, APs_range
 
         # Pick a set of random images
-        APs = compute_batch_ap(view_ids[:])
+        APs, APs_range = compute_batch_ap(view_ids[:])
         np.save(model.log_dir, APs)
+        np.save(model.log_dir, APs_range)
         print("mAP @ IoU=50: ", np.mean(APs))
+        print("mAP_range @IoU[0.5;0.95]: {}".format(np.mean(APs_range)))
         
     elif args.command == "visualize":
         max_views = 2

@@ -1033,6 +1033,11 @@ def grid_reas(inputs, scope, config, kernel=(3, 3, 3), filters=256):
         x = KL.Lambda(lambda x: tf.reshape(x, [grid_shape[0]] + grid_shape[2:]))(x)
         x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
         x = KL.Activation('relu')(x)
+
+    if config.GRID_REAS == 'add':
+        x = KL.Lambda(lambda x: tf.keras.backend.sum(x, axis=1))(x)
+        x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
+        x = KL.Activation('relu')(x)
         
     elif config.GRID_REAS == 'conv3d':
         grid_shape = tf_static_shape(x)
@@ -1080,7 +1085,8 @@ def grid_reas(inputs, scope, config, kernel=(3, 3, 3), filters=256):
     
     
 def depth_sampling(x, config, name):
-    x = KL.TimeDistributed(KL.Conv2D(1, (1,1), padding='same'), name=name+'2DConv')(x)
+    #x = KL.TimeDistributed(KL.Conv2D(1, (1,1), padding='same'), name=name+'2DConv')(x)
+    x = KL.Lambda(lambda x: tf.keras.backend.sum(x, axis=1))(x)
     x = add_bn_layer(name=name+'bn')(x, training=config.TRAIN_BN)
 #     x = KL.LeakyReLU(alpha=0.01)(x)
     x = KL.Activation('relu')(x)
@@ -2984,7 +2990,6 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             for i in range(actual_num_views):
                 batch_images[b, i] = mold_image(image[i].astype(np.float32), config)
                 batch_gt_R[b,i] = Rcam[i]
-            #batch_images[:, 0] = batch_images[:, 0]*0.
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
@@ -3154,14 +3159,14 @@ class MaskRCNN():
         PG6 = KL.Lambda(lambda x: proj_grid(x, config=self.config, proj_size=10), name="projs_PG6")([PG6, grid_pos, input_R, input_Kmat])
         print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
-        PG2 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG2)
-        PG3 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG3)
-        PG4 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG4)
-        PG5 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG5)
-        PG6 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG6)
+        # PG2 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG2)
+        # PG3 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG3)
+        # PG4 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG4)
+        # PG5 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG5)
+        # PG6 = KL.Lambda(lambda x: tf.transpose(x, [0, 4, 2, 3, 1]))(PG6)
         print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
-        PG2_intermediate = KL.Lambda(lambda x: x[:,:,:,:,0])(PG2)
+        PG2_intermediate = KL.Lambda(lambda x: x[:, :, :, :, 0])(PG2)
         print("PG2_shape: {}".format(PG2.get_shape().as_list()))
 
         PG2 = depth_sampling(PG2, config, name='grid_reas_depth_PG2')
@@ -3170,11 +3175,11 @@ class MaskRCNN():
         PG5 = depth_sampling(PG5, config, name='grid_reas_depth_PG5')
         PG6 = depth_sampling(PG6, config, name='grid_reas_depth_PG6')
 
-        PG2 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG2)
-        PG3 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG3)
-        PG4 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG4)
-        PG5 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG5)
-        PG6 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG6)
+        # PG2 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG2)
+        # PG3 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG3)
+        # PG4 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG4)
+        # PG5 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG5)
+        # PG6 = KL.Lambda(lambda x: tf.transpose(x[:,:,:,:,0], [0, 2, 3, 1]))(PG6)
 
         if not config.VANILLA:
             print("recurrent mrcnn")
@@ -3188,9 +3193,9 @@ class MaskRCNN():
             PG2 = KL.Lambda(lambda x: tf.zeros(shape=[config.BATCH_SIZE, 160, 160, config.TOP_DOWN_PYRAMID_SIZE]))(PG5)
             PG3 = KL.Lambda(lambda x: tf.zeros(shape=[config.BATCH_SIZE, 80, 80, config.TOP_DOWN_PYRAMID_SIZE]))(PG5)
 #             PG3 = KL.Add()([PG3, P3])
-            PG4 = KL.Add()([PG4, P4])
-            PG5 = KL.Add()([PG5, P5])
-            PG6 = KL.Add()([PG6, P6])
+#             PG4 = KL.Add()([PG4, P4])
+#             PG5 = KL.Add()([PG5, P5])
+#             PG6 = KL.Add()([PG6, P6])
 
             rpn_feature_maps = [PG2, PG3, PG4, PG5, PG6]
             mrcnn_feature_maps = [PG2, PG3, PG4, PG5]
@@ -3204,9 +3209,7 @@ class MaskRCNN():
             rpn_feature_maps = [P2, P3, P4, P5, P6]
             mrcnn_feature_maps = [P2, P3, P4, P5]
 
-        print("PG2_shape: {}".format(PG2.get_shape().as_list()))
-        print("PG6_shape: {}".format(PG6.get_shape().as_list()))
-            
+
                 # Anchors
         if mode == "training":
             anchors = self.get_anchors(config.IMAGE_SHAPE)
