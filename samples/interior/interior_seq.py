@@ -432,12 +432,12 @@ if __name__ == '__main__':
                 vsize_z = float(vmax_z - vmin_z) / nvox_z
                 vox_bs = 1
                 im_bs = 1
-                samples = 25
+                samples = 20
                 NUM_VIEWS = 2
                 RECURRENT = False
                 USE_RPN_ROIS = True
                 LEARNING_RATE = 0.001
-                GRID_REAS = 'add'
+                GRID_REAS = 'conv3d'
                 BACKBONE = 'resnet50'
                 VANILLA = False
                 WEIGHT_DECAY = 0.0001

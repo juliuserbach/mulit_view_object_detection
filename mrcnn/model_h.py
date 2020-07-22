@@ -849,16 +849,12 @@ def proj_grid(inputs, config, proj_size):
     """
     grid, grid_pos, Rcam, Kmat = inputs
     rsz_factor = float(proj_size) / config.IMAGE_SHAPE[0]   # image height
-    rsz_h = float(proj_size) / 480.   # image height
-    rsz_w = float(proj_size) / 640.   # image height
-    rsz_matrix = tf.constant([[rsz_w, 0., 0.], 
-                 [0., rsz_h, 0.],
-                 [0., 0., 1.]])
-#     Kmat = tf.matmul(rsz_matrix[tf.newaxis, :,:], Kmat)
+
     Kmat = Kmat * rsz_factor
     Kmat = tf.expand_dims(Kmat, axis=1)
    
     bs, h, w, d, ch = grid.get_shape().as_list()
+    bs = config.BATCH_SIZE
 
     Rcam = tf.reshape(Rcam[:,0,:,:], [bs, 1, 3, 4])
     
@@ -1046,12 +1042,34 @@ def grid_reas(inputs, scope, config, kernel=(3, 3, 3), filters=256):
         x = KL.Lambda(lambda x: tf.transpose(x, [0, 2, 3, 4, 1, 5]))(x)
         x = KL.Lambda(lambda x: tf.reshape(x, [x_shape[0]]+x_shape[2:-1]+[config.NUM_VIEWS*x_shape[-1]]))(x)
         x = KL.Activation('relu')(x)
-        if name_conv not in reused_lay:
-            reused_lay[name_conv] = KL.Conv3D(filters=config.TOP_DOWN_PYRAMID_SIZE, kernel_size=(3,3,3), padding='same', name=name_conv)
-        x = reused_lay[name_conv](x)
-        x = add_bn_layer(name=name_bn)(x, training=config.TRAIN_BN)
-#         x = KL.LeakyReLU(alpha=0.01)(x)
+        if name_conv+'_1' not in reused_lay:
+            reused_lay[name_conv+'_1'] = KL.Conv3D(filters=config.TOP_DOWN_PYRAMID_SIZE*2, strides=(2, 2, 2),
+                                              kernel_size=(3,3,3), padding='same', name=name_conv+'_1')
+        x = reused_lay[name_conv+'_1'](x)
+        x = add_bn_layer(name=name_bn+'_1')(x, training=config.TRAIN_BN)
+        conv1 = KL.Activation('relu')(x)
+        
+        if name_conv+'_2' not in reused_lay:
+            reused_lay[name_conv+'_2'] = KL.Conv3D(filters=config.TOP_DOWN_PYRAMID_SIZE*4, strides=(2, 2, 2),
+                                              kernel_size=(3,3,3), padding='same', name=name_conv+'_2')
+        x = reused_lay[name_conv+'_2'](conv1)
+        x = add_bn_layer(name=name_bn+'_2')(x, training=config.TRAIN_BN)
+        conv2 = KL.Activation('relu')(x)
+        
+        if name_conv+'_deconv_1' not in reused_lay:
+            reused_lay[name_conv+'_deconv_1'] = KL.Conv3DTranspose(filters=config.TOP_DOWN_PYRAMID_SIZE*2, strides=(2, 2, 2),
+                                              kernel_size=(3,3,3), padding='same', name=name_conv+'_deconv_1')
+        x = reused_lay[name_conv+'_deconv_1'](conv2)
+        x = add_bn_layer(name=name_bn+'deconv_1')(x, training=config.TRAIN_BN)
+        deconv1 = KL.Activation('relu')(x)
+        if name_conv+'_deconv_2' not in reused_lay:
+            reused_lay[name_conv+'_deconv_2'] = KL.Conv3DTranspose(filters=config.TOP_DOWN_PYRAMID_SIZE, strides=(2, 2, 2),
+                                              kernel_size=(3,3,3), padding='same', name=name_conv+'_deconv_2')
+        x = KL.Lambda(lambda x: tf.concat([deconv1, x], axis=4))(conv1)
+        x = reused_lay[name_conv+'_deconv_2'](x)
+        x = add_bn_layer(name=name_bn+'deconv_2')(x, training=config.TRAIN_BN)
         x = KL.Activation('relu')(x)
+        print("shape of grid after fusion: {}".format(x.get_shape().as_list()))
     
     elif config.GRID_REAS == 'ident':
         x_shape = x.get_shape().as_list()
@@ -1085,11 +1103,25 @@ def grid_reas(inputs, scope, config, kernel=(3, 3, 3), filters=256):
     
     
 def depth_sampling(x, config, name):
-    #x = KL.TimeDistributed(KL.Conv2D(1, (1,1), padding='same'), name=name+'2DConv')(x)
-    x = KL.Lambda(lambda x: tf.keras.backend.sum(x, axis=1))(x)
-    x = add_bn_layer(name=name+'bn')(x, training=config.TRAIN_BN)
-#     x = KL.LeakyReLU(alpha=0.01)(x)
+    x_shape = x.get_shape().as_list()
+    x = KL.Lambda(lambda x: tf.transpose(x, [0, 2, 3, 4, 1]))(x)
+    x = KL.Lambda(lambda x: tf.reshape(x, [x_shape[0]]+x_shape[2:-1]+[config.samples*x_shape[-1]]))(x)
+    
+    x = KL.DepthwiseConv2D((1,1), depth_multiplier=1, name=name+'_DepthwiseConv_1')(x)
+    x = KL.Conv2D(512, (1,1), padding='same', name=name+'2DConv_1')(x)
+    x = add_bn_layer(name=name+'bn_1')(x, training=config.TRAIN_BN)
     x = KL.Activation('relu')(x)
+    
+    x = KL.DepthwiseConv2D((1,1), depth_multiplier=1, name=name+'_DepthwiseConv_2')(x)
+    x = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1,1), padding='same', name=name+'2DConv_2')(x)
+    x = add_bn_layer(name=name+'bn_2')(x, training=config.TRAIN_BN)
+    x = KL.Activation('relu')(x)
+
+#     x = KL.Conv2DTranspose(config.TOP_DOWN_PYRAMID_SIZE, (3,3), strides=(2,2), padding='same', name=name+'2DConvTranspose_1')(x)
+#     x = KL.TimeDistributed(KL.Conv2D(1, (1,1), padding='same'), name=name+'2DConv')(x)
+#     x = KL.Lambda(lambda x: tf.keras.backend.sum(x, axis=1))(x)
+#     x = add_bn_layer(name=name+'bn_deconv')(x, training=config.TRAIN_BN)
+#     x = KL.Activation('relu')(x)
     return x
 ############################################################
 #  Resnet Graph
