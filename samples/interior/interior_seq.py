@@ -465,12 +465,12 @@ if __name__ == '__main__':
             vmin_z = 1.
             vsize = float(vmax - vmin) / nvox
             vsize_z = float(vmax_z - vmin_z) / nvox_z
-            samples = 25
+            samples = 20
             NUM_VIEWS = 2
             RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.01
-            GRID_REAS = 'ident'
+            GRID_REAS = 'conv3d'
             BACKBONE = 'resnet50'
             VANILLA = False
             
@@ -534,8 +534,8 @@ if __name__ == '__main__':
 #         layers = layer_regex[train_layers]
 #     model.set_trainable(layers)
     print(model_path)
-    model.load_weights(model_path, by_name=True, exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3", "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2", "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4", "mrcnn_mask_deconv"])
-    #model.load_weights(model_path, by_name=True)
+#     model.load_weights(model_path, by_name=True, exclude=["mrcnn_bbox_fc", "mrcnn_class_logits", "mrcnn_mask", "fpn_c5p5", "fpn_c4p4", "fpn_c3p3", "fpn_c2p2", "fpn_p5", "fpn_p4", "fpn_p3", "fpn_p2", "rpn_model", "mrcnn_mask_conv1", "mrcnn_class_conv1", "mrcnn_mask_bn1", "mrcnn_mask_conv2", "mrcnn_mask_bn2", "mrcnn_mask_conv3", "mrcnn_mask_bn3", "mrcnn_mask_conv4", "mrcnn_mask_bn4", "mrcnn_mask_deconv"])
+    model.load_weights(model_path, by_name=True)
 #     
 
     
@@ -573,7 +573,7 @@ if __name__ == '__main__':
         print("Training all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=501,
+                    epochs=2001,
                     layers='grid+')
 #         Training - Stage 2
 #         Finetune layers from ResNet stage 4 and up
@@ -582,7 +582,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=1001,
+                    epochs=4001,
                     layers='4+')
 #
 #         # Training - Stage 4
@@ -590,7 +590,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE/10,
-                    epochs=1501,
+                    epochs=4501,
                     layers='all')
 #         for layer in model.keras_model.layers:
 #             if layer.name == 'backbone':
@@ -638,7 +638,7 @@ if __name__ == '__main__':
                     Rcam.append(dataset.load_R(image_id))
 
                 im = np.stack(im)
-                im[0,:,:,:] = im[0,:,:,:]*0.
+                #im[0,:,:,:] = im[0,:,:,:]*0.
                 Rcam = np.stack([Rcam])
                 Kmat = np.stack([Kmat])
                 # Run object detection
@@ -666,16 +666,17 @@ if __name__ == '__main__':
         print("mAP_range @IoU[0.5;0.95]: {}".format(np.mean(APs_range)))
         
     elif args.command == "visualize":
-        max_views = 2
+        max_views = 5
         dataset = InteriorDataset()
-        dataset.load_Interior(dataset_dir=args.dataset, subset='test', class_ids=selected_class_list, 
+        dataset.load_Interior(dataset_dir=args.dataset, subset='val', class_ids=selected_class_list, 
                                     NYU40_to_sel_map=NYU40_to_sel_map, selected_classes=selected_classes)
         dataset.prepare()
-        view_ids = np.copy(list(dataset.view_map.keys()))
+        view_ids = np.copy(list(dataset.view_map_seq.keys()))
         
         num_views_map = {1: 'NV1', 2: 'NV2', 3: 'NV3', 4: 'NV4'}
-        SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results', num_views_map[config.NUM_VIEWS])
-        for instance_index, instance_id in enumerate(view_ids):
+#         SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results', num_views_map[config.NUM_VIEWS])
+        SAVE_DIR = os.path.join(ROOT_DIR, 'data/InteriorNet/Results', 'unet_2views')
+        for view_index, view_id in enumerate(view_ids):
             #instance_id = instance_ids[instance_index]               
             image_ids = dataset.load_view(max_views, main_image=view_id, rnd_state=1)
             # skip instance if it has to few views (return of load_views=None)
@@ -683,7 +684,7 @@ if __name__ == '__main__':
                 continue
             # Load image
 
-            print("processing image {} of {}".format(instance_index, instance_ids.size)) 
+            print("processing image {} of {}".format(view_index, view_ids.size)) 
             image = dataset.load_image(image_ids[0])
             im = []
             Rcam = []
