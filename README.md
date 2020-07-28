@@ -51,7 +51,9 @@ The Matterport_Inference Notebook is a demo Notebook to show how inference is pe
 
 
 ## Usage
-To train a model the file samples/interior/interior_multi.py is used. In this file the necessary settings can be made like the number of views etc. In the folder samples/interior the follwing commands can be used for training and inference.
+Before training is run the mapping between views has to be created. Run view_mapping.py for the sequential dataset and view_mapping_seq.py for the non-sequential dataset. Both scripts are in samples/interior.
+
+To train a model the file samples/interior/interior_multi.py is used. In this file the necessary settings can be made like the number of views etc. In the folder samples/interior the follwing commands can be used for training and inference on the sequential dataset. To use the non-sequential dataset, the HD7 should be selected.
 ```
  python interior_multi.py train --dataset ../../data/InteriorNet/data/HD1 --model /path/to/weights --logs ../../logs
  python interior_multi.py evaluate --dataset ../../data/InteriorNet/data/HD1 --model /path/to/weights --logs ../../logs
