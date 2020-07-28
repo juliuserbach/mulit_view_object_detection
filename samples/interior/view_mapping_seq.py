@@ -10,6 +10,8 @@ from pycocotools.coco import COCO
 
 
 ROOT_DIR = os.path.abspath("../../")
+sys.path.append(ROOT_DIR)  # To find local version of the library
+from samples.interior import classes
 
 
 subsets = ["train", "val"]
@@ -17,8 +19,9 @@ DATASET_DIR = "data/InteriorNet/data/HD1"
 add_path = 'original_1_1'
 label_path = 'original_1_1/label0/data'
 
-NYU40_to_sel_map = {0: 0, 1: 0, 2: 0, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 0, 9: 0, 10: 8, 11: 6, 12: 0, 13: 7, 14: 5, 15: 8, 16: 0, 17: 9, 18: 10, 19: 11, 20: 0, 21: 12, 22: 0, 23: 13, 24: 14, 25: 15, 26: 16, 27: 17, 28: 0, 29: 0, 30: 0, 31: 0, 32: 0, 33: 18, 34: 19, 35: 20, 36: 21, 37: 22, 38: 0, 39: 0, 40: 0}
-class_ids = [0, 3, 4, 5, 6, 7, 11, 13, 15, 17, 18, 19, 21, 23, 25, 26, 27, 33, 34, 35, 36, 37, 14, 10, 24]
+
+NYU40_to_sel_map = classes.NYU40_to_sel_map
+class_ids = classes.selected_class_list
 for subset in subsets:
     # make one mapping for all scenes in one subset(train, val, test) keys are like "scene_name_id"timestep""
     mapping = {}

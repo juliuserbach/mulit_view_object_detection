@@ -12,7 +12,7 @@ ROOT_DIR = os.path.abspath("../../")
 sys.path.append(ROOT_DIR)  # To find local version of the library
 
 from mrcnn import utils
-
+from samples.interior import classes
 
 
 ROOT_DIR = os.path.abspath("../../")
@@ -29,7 +29,7 @@ else:
     add_path = ''
     label_path = 'label0/data'
     
-NYU40_to_sel_map = {0: 0, 1: 0, 2: 0, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 0, 9: 0, 10: 8, 11: 6, 12: 0, 13: 7, 14: 5, 15: 8, 16: 0, 17: 9, 18: 10, 19: 11, 20: 0, 21: 12, 22: 0, 23: 13, 24: 14, 25: 15, 26: 16, 27: 17, 28: 0, 29: 0, 30: 0, 31: 0, 32: 0, 33: 18, 34: 19, 35: 20, 36: 21, 37: 22, 38: 0, 39: 0, 40: 0}
+NYU40_to_sel_map = classes.NYU40_to_sel_map
 
     
     
