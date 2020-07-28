@@ -42,6 +42,8 @@ from mrcnn import utils
 from mrcnn import visualize
 
 import mrcnn.model_transformer as modellib
+from samples.interior import classes
+
 
 import tensorflow as tf
 import keras
@@ -91,6 +93,7 @@ class InteriorDataset(utils.Dataset):
         """
         _, hd_folder = os.path.split(dataset_dir)
         print(hd_folder)
+        self.hd_folder = hd_folder
         dataset_dir = "{}/{}".format(dataset_dir, subset)
         self.dataset_dir = dataset_dir
         
@@ -99,7 +102,6 @@ class InteriorDataset(utils.Dataset):
         with open(os.path.join(dataset_dir,'view_mapping.json')) as json_file:
             self.view_map = json.load(json_file)
         
-        #list of class names
 
         self.NYU40_to_sel_map = NYU40_to_sel_map
         
@@ -118,10 +120,14 @@ class InteriorDataset(utils.Dataset):
                 coco = COCO("{}/cocolabel.json".format(os.path.join(image_dir, 'original_1_1')))
                 add_path = 'original_1_1'
                 self.label_path = 'original_1_1/label0/data'
+                with open(os.path.join(dataset_dir, 'view_mapping_seq.json')) as json_file:
+                    self.view_map = json.load(json_file)
             else:
                 coco = COCO("{}/cocolabel.json".format(image_dir))
                 add_path = ''
                 self.label_path = 'label0/data'
+                with open(os.path.join(dataset_dir, 'view_mapping.json')) as json_file:
+                    self.view_map = json.load(json_file)
 
             head, tail = os.path.split(image_dir)
            
@@ -289,62 +295,41 @@ class InteriorDataset(utils.Dataset):
         image_info = self.image_info[image_id]
         return image_info["R"]
     
-#     def load_view(self, n, instance=None, rnd_state=None):
-#         """ takes number of views n and outputs n image ids of a random instance
-#         fix rnd_state for evaluation purposes
-#         """
-#         if n < 0:  
-#             max_views = 4
-#         else:
-#             max_views = n
-#         LocalProcRandGen = np.random.RandomState(rnd_state)
-#         if not instance:
-#             instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
-#             # assure that there are at least n different views of the same instance
-#             while np.asarray(self.instance_map[instance]).shape[0] < max_views:
-#                 instance = LocalProcRandGen.choice(list(self.instance_map.keys()),1)[0]
-#         obj_inst = np.asarray(self.instance_map[instance])
-#         num_available_views = obj_inst.shape[0]
-#         if num_available_views < max_views:
-#             return None
-#         views = LocalProcRandGen.choice(range(obj_inst.shape[0]), max_views, replace=False)
-#         image_ids = obj_inst[views][:,1]
-#         image_ids = image_ids[:n]
-#         out = []
-#         for image_id in image_ids:
-#             image_id = self.image_from_source_map['interior.'+image_id]
-#             out.append(image_id)
-#         return out
-
-    
-    def load_view(self, n, main_image=None, rnd_state=None):
-        """ takes number of views n and outputs n image ids of a random instance
-        fix rnd_state for evaluation purposes
-        """
-        if n < 0:  
-            max_views = 4
+    def load_view(self, n, main_image, rnd_state=None):
+        max_views = 5
+        if self.hd_folder != 'HD7':
+            num_skip = 5
+            LocalProcRandGen = np.random.RandomState(rnd_state)
+            secondary_views = np.asarray(self.view_map[main_image])
+            #views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views - 1, replace=False)
+            #image_ids = secondary_views[views]
+            image_ids = secondary_views[::-1]
+            image_ids = image_ids[num_skip:n*num_skip:num_skip]
+            out = [self.image_from_source_map['interior.' + main_image]]
+            for image_id in image_ids:
+                image_id = self.image_from_source_map['interior.' + image_id]
+                out.append(image_id)
+            return out
         else:
-            max_views = n
-        max_views = 2
-        LocalProcRandGen = np.random.RandomState(rnd_state)
-        if not main_image:
-            main_image = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
-            print(main_image)
-            # assure that there are at least n different views of the same instance
-            while np.asarray(self.view_map[main_image]).shape[0] < max_views:
-                view = LocalProcRandGen.choice(list(self.view_map.keys()),1)[0]
-        secondary_views = np.asarray(self.view_map[main_image])
-        num_available_views = secondary_views.shape[0]
-        if num_available_views < max_views:
-            return None
-        views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views-1, replace=False)
-        image_ids = secondary_views[views]
-        image_ids = image_ids[:n-1]
-        out = [self.image_from_source_map['interior.'+main_image]]
-        for image_id in image_ids:
-            image_id = self.image_from_source_map['interior.'+image_id]
-            out.append(image_id)
-        return out
+            LocalProcRandGen = np.random.RandomState(rnd_state)
+            if not main_image:
+                main_image = LocalProcRandGen.choice(list(self.view_map.keys()), 1)[0]
+                print(main_image)
+                # assure that there are at least n different views of the same instance
+                while np.asarray(self.view_map[main_image]).shape[0] < max_views:
+                    view = LocalProcRandGen.choice(list(self.view_map.keys()), 1)[0]
+            secondary_views = np.asarray(self.view_map[main_image])
+            num_available_views = secondary_views.shape[0]
+            if num_available_views < max_views:
+                return None
+            views = LocalProcRandGen.choice(range(secondary_views.shape[0]), max_views - 1, replace=False)
+            image_ids = secondary_views[views]
+            image_ids = image_ids[:n - 1]
+            out = [self.image_from_source_map['interior.' + main_image]]
+            for image_id in image_ids:
+                image_id = self.image_from_source_map['interior.' + image_id]
+                out.append(image_id)
+            return out
 
 ############################################################
 #  Training
@@ -472,41 +457,6 @@ if __name__ == '__main__':
         model_path = args.model
 
 #     # Load weights
-    #model_path_bb = os.path.join(args.logs, '../weights', 'mask_rcnn_interiornet_bb.h5')
-#     print("Loading weights ", model_path)
-#     from keras.engine import saving
-#     import h5py
-#     # f = h5py.File(os.path.join(model_path), mode='r')
-#     folder, weight_name = os.path.split(model_path)
-#     epoch = weight_name[-7:-3]
-#     model_path_bb = folder+'/backbone_callb_epoch_{}.h5'.format(epoch)
-#     f = h5py.File(os.path.join(model_path_bb), mode='r')
-#     #f = h5py.File(COCO_MODEL_PATH, mode='r')
-#     for layer in model.keras_model.layers:
-#         if layer.name == 'backbone':
-#             layers = layer.layers
-#             print(layer.__class__.__name__)
-#             saving.load_weights_from_hdf5_group_by_name(f, layer.layers)
-#             break
-#     model_path_bb = os.path.join(ROOT_DIR, 'weights', 'mask_rcnn_interiornet_bb.h5', 'backbone_sep.h5')
-#     model.load_weights(model_path_bb, by_name=True)
-#     train_layers = 'grid+'
-#     layer_regex = {
-#             # all layers but the backbone
-#             "heads": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)",
-#             "grid+": r"(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
-#             "grid+-": r"(mrcnn\_.*)|(rpn\_.*)|(grid_reas\_.*)",
-#             "grid_only": r"(grid_reas\_.*)",
-#             # From a specific Resnet stage and up
-#             "3+": r"(res3.*)|(bn3.*)|(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
-#             "4+": r"(res4.*)|(bn4.*)|(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
-#             "5+": r"(res5.*)|(bn5.*)|(mrcnn\_.*)|(rpn\_.*)|(fpn\_.*)|(grid_reas\_.*)",
-#             # All layers
-#             "all": ".*",
-#         }
-#     if train_layers in layer_regex.keys():
-#         layers = layer_regex[train_layers]
-#     model.set_trainable(layers)
     print(model_path)
     model.load_weights(model_path, by_name=True)
     # model.load_weights(model_path, by_name=True,
@@ -588,13 +538,11 @@ if __name__ == '__main__':
             max_views = 2
             APs = []
             for view_index, view_id in enumerate(view_ids):
-                #instance_id = instance_ids[instance_index]               
                 image_ids = dataset.load_view(max_views, main_image=view_id, rnd_state=0)
                 # skip instance if it has to few views (return of load_views=None)
                 if not image_ids:
                     continue
                 image_ids = image_ids[:config.NUM_VIEWS]
-                #image_pair = image_ids.reshape([-1,config.NUM_VIEWS])
                 # Load image
                 print("processing image {} of {}".format(view_index, view_ids.size))
                 image, image_meta, gt_class_id, gt_bbox, gt_mask =\
