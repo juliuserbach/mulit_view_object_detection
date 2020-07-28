@@ -22,6 +22,9 @@ from keras.utils.generic_utils import has_arg
 from keras.utils.generic_utils import to_list
 from keras.utils.generic_utils import transpose_shape
 
+import tensorflow.contrib.slim as slim
+import tensorflow as tf
+
 class ConvRNN3D(KL.ConvRNN2D):
     def __init__(self, cell,
                  return_sequences=False,
@@ -366,3 +369,111 @@ class ConvRNN3D(KL.ConvRNN2D):
                                      ', found shape=' + str(value.shape))
                 # TODO: consider batch calls to `set_value`.
                 K.set_value(state, value)
+                
+                
+#######################################################
+# Definition of cells
+#######################################################
+
+class ConvLSTMCell(KL.Layer):
+    
+    
+    def __init__(self, shape, kernel, filters, 
+                 initializer=slim.initializers.xavier_initializer(),
+                 data_format='channels_last', activation=tf.tanh,
+                 normalize=False, forget_bias = 1., **kwargs):
+        self._normalize = normalize
+        self.kernel = kernel
+        self.kernel_size = kernel
+        self.filters = filters 
+        self._initializer = initializer
+        self._activation = activation
+        self._forget_bias = forget_bias
+        self._size = tf.TensorShape(shape + [self.filters])
+        self._feature_axis = self._size.ndims
+        self.data_format = data_format
+        if self._normalize:
+            self.layer_norm_input_contribution = KL.LayerNormalization()
+            self.layer_norm_input_gate = KL.LayerNormalization()
+            self.layer_norm_output_gate = KL.LayerNormalization()
+            self.layer_norm_forget_gate = KL.LayerNormalization()
+            self.layer_norm_memory = KL.LayerNormalization()
+        super(ConvLSTMCell, self).__init__(**kwargs)
+    
+    
+    @property
+    def state_size(self):
+        return tf.contrib.rnn.LSTMStateTuple(self._size, self._size)
+
+    
+    @property
+    def output_size(self):
+        return self._size
+        
+        
+    def build(self, input_shape):
+        print("input shape in build:  {}".format(input_shape))
+        bs, h, w, d, ch = input_shape
+        self.input_dim = ch
+        filters = self.filters
+        gates = 4 * filters if filters > 1 else 4
+        n = ch + filters
+        m = gates
+        
+        self.W = self.add_weight(name='weights_lstm3d',
+                                 shape=self.kernel + [n, m], 
+                                 initializer=self._initializer
+                                 , trainable=True)
+
+        self.bias = self.add_weight(name='bias_lstm3d',
+                                    shape=[m], 
+                                    initializer=tf.constant_initializer(0.0), 
+                                    trainable=True)
+
+        if self.data_format=='channels_first':
+            channel_axis = 1
+        else:
+            channel_axis = -1
+        input_dim = input_shape[channel_axis]
+        kernel_shape = self.kernel + [input_dim, self.filters * 4]
+        self.kernel_shape = kernel_shape
+        
+        
+    def call(self, x, h, **kwargs):
+        
+        scope = None
+        with tf.variable_scope(scope or self.__class__.__name__):
+            previous_memory, previous_output = h
+            
+            print("shape of x: {}".format(x.get_shape().as_list()))
+            
+            channels = x.shape[-1].value
+            filters = self.filters
+            gates = 4 * filters if filters > 1 else 4
+            x = tf.concat([x, previous_output], axis=self._feature_axis)
+            n = channels + filters
+            m = gates
+            
+            y = tf.nn.convolution(x, self.W, 'SAME')
+            if not self._normalize:
+                y += self.bias
+            input_contribution, input_gate, forget_gate, output_gate = tf.split(
+                y, 4, axis=self._feature_axis)
+
+            if self._normalize:
+                input_contribution = self.layer_norm_input_contribution(
+                    input_contribution)
+                input_gate = self.layer_norm_input_gate(input_gate)
+                forget_gate = self.layer_norm_forget_gate(forget_gate)
+                output_gate = self.layer_norm_output_gate(output_gate)
+
+            memory = (
+                previous_memory * tf.sigmoid(forget_gate + self._forget_bias) +
+                tf.sigmoid(input_gate) * self._activation(input_contribution))
+
+            if self._normalize:
+                memory = self.layer_norm_memory(memory)
+
+            output = self._activation(memory) * tf.sigmoid(output_gate)
+
+            return output, tf.contrib.rnn.LSTMStateTuple(memory, output)
