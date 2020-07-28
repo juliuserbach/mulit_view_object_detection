@@ -368,39 +368,29 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         class TrainConfig(InteriorNetConfig):
-                TOP_DOWN_PYRAMID_SIZE = 64
-#                 FPN_CLASSIF_FC_LAYERS_SIZE = 128
-#                 POST_NMS_ROIS_INFERENCE = 1000
-                POST_NMS_ROIS_TRAINING = 500
-                PRE_NMS_LIMIT = 1500
-                GPU_COUNT = 1
-                IMAGES_PER_GPU = 1
-                STEPS_PER_EPOCH = 100
-                VALIDATION_STEPS = 20
-                NUM_CLASSES = len(selected_classes)  # background + num classes
-                nvox = 40
-                nvox_z = 40
-                min_z = 0.5
-                max_z = 5.
-                GRID_DIST = 5.
-                vmin = -2.5
-                vmax = 2.5
-                vmax_z = 10.
-                vmin_z = 1.
-                vsize = float(vmax - vmin) / nvox
-                vsize_z = float(vmax_z - vmin_z) / nvox_z
-                vox_bs = 1
-                im_bs = 1
-                samples = 20
-                NUM_VIEWS = 2
-                RECURRENT = False
-                USE_RPN_ROIS = True
-                LEARNING_RATE = 0.001
-                GRID_REAS = 'conv3d'
-                BACKBONE = 'resnet50'
-                VANILLA = False
-                WEIGHT_DECAY = 0.0001
-                TRANSFORMER = False
+            TOP_DOWN_PYRAMID_SIZE = 64
+            POST_NMS_ROIS_TRAINING = 500
+            PRE_NMS_LIMIT = 1500
+            GPU_COUNT = 1
+            IMAGES_PER_GPU = 1
+            STEPS_PER_EPOCH = 100
+            VALIDATION_STEPS = 20
+            NUM_CLASSES = len(selected_classes)  # background + num classes
+            nvox = 40
+            nvox_z = 40
+            vmin = -2.5
+            vmax = 2.5
+            vmax_z = 10.
+            vmin_z = 1.
+            vsize = float(vmax - vmin) / nvox
+            vsize_z = float(vmax_z - vmin_z) / nvox_z
+            samples = 20
+            NUM_VIEWS = 2
+            USE_RPN_ROIS = True
+            LEARNING_RATE = 0.001
+            GRID_REAS = 'conv3d'
+            BACKBONE = 'resnet50'
+            VANILLA = False
         config = TrainConfig()
     else:
         class InferenceConfig(InteriorNetConfig):
@@ -415,8 +405,6 @@ if __name__ == '__main__':
             NUM_CLASSES = len(selected_classes)  # background + num classes
             nvox = 40
             nvox_z = 40
-            min_z = 0.5
-            max_z = 5.
             GRID_DIST = 5.
             vmin = -2.5
             vmax = 2.5
@@ -426,7 +414,6 @@ if __name__ == '__main__':
             vsize_z = float(vmax_z - vmin_z) / nvox_z
             samples = 20
             NUM_VIEWS = 1
-            RECURRENT = False
             USE_RPN_ROIS = True
             LEARNING_RATE = 0.01
             GRID_REAS = 'conv3d'

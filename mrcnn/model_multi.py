@@ -608,8 +608,6 @@ def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
 
 def build_resnet_fpn(input_image, config):
     ''' computes the feature map for one batch'''
-    print("input_image_shape: {}".format(input_image.get_shape().as_list()))
-    print("fn image_shape: {}".format(input_image.get_shape().as_list()))
     if callable(config.BACKBONE):
         _, C2, C3, C4, C5 = config.BACKBONE(input_image, stage5=True,
                                             train_bn=config.TRAIN_BN)
@@ -1282,10 +1280,6 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
     # TODO: check if stride of 2 causes alignment issues if the feature map
     # is not even.
     # Shared convolutional base of the RPN
-    print("feature_map_rpn: {}".format(feature_map.get_shape().as_list()))
-    print("feature_map_rpn2: {}".format(type(feature_map)))
-    print("feature_map: {}".format(feature_map))
-
     shared = KL.Conv2D(512, (3, 3), padding='same', activation='relu',
                        strides=anchor_stride,
                        name='rpn_conv_shared')(feature_map)
@@ -1309,9 +1303,6 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
 
     # Reshape to [batch, anchors, 4]
     rpn_bbox = KL.Lambda(lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 4]))(x)
-    print("rpn_class_logits_rpn: {}".format(rpn_class_logits.get_shape().as_list()))
-    print("rpn_probs: {}".format(rpn_probs.get_shape().as_list()))
-    print("rpn_bbox: {}".format(rpn_bbox.get_shape().as_list()))
     return [rpn_class_logits, rpn_probs, rpn_bbox]
 
 
@@ -2199,7 +2190,6 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             # RPN Targets
             rpn_match, rpn_bbox = build_rpn_targets(image[0].shape, anchors,
                                                     gt_class_ids, gt_boxes, config)
-#             print("image shape in generator: {}".format(image[0].shape))
             assert np.any(rpn_match), "no rpn_match in generator"
             # Mask R-CNN Targets
             if random_rois:
@@ -2449,7 +2439,6 @@ class MaskRCNN():
         # Loop through pyramid layers
         layer_outputs = []  # list of lists
         for p in rpn_feature_maps:
-            print(p.get_shape().as_list())
             layer_outputs.append(rpn([p]))
         # Concatenate layer outputs
         # Convert from list of lists of level outputs to list of lists
