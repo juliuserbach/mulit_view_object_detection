@@ -58,3 +58,7 @@ To train a model the file samples/interior/interior_multi.py is used. In this fi
  python interior_multi.py train --dataset ../../data/InteriorNet/data/HD1 --model /path/to/weights --logs ../../logs
  python interior_multi.py evaluate --dataset ../../data/InteriorNet/data/HD1 --model /path/to/weights --logs ../../logs
 ```
+
+## Dataset
+In order to download the dataset the python package gdown was used, that ignores warnings that occure for large files on Google drive. `pip install gdown` <\br>
+The links for a subset of scenes from the non-sequential dataset (folder HD7) and the corresponding filenames can be found in the csv files list_of_files_inHDx.csv. The script that was used to create the csv's can be found [here](https://docs.google.com/spreadsheets/d/1a8Ys_xbKbW9BKdZ-6PHchmeyhDzgHAxYINMd3-h9C2I/edit?usp=sharing). The script can be changed under Tools->Scripteditor. It can only run for 5 minutes and has to be restarted afterwards.
