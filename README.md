@@ -4,7 +4,7 @@
 Within this project a network architecture was developed to fuse features from multiple images with different viewpoints on the same scene for the purpose of instance segmentation. In order to combine the information from different images, the camera poses are leveraged using projective geometry. By implementing unprojection and projection layers into the network structure, which can transform the information into a 3D coordinate system, the network is not required to learn the rules of projective geometry.
 The performance of the developed network is evaluated on the novel InteriorNet dataset. Implementing projective geometry into the network proves to be an applicable approach and the developed modules build a solid base for future work on this topic.
 
-## Foulder Structure
+## Folder Structure
 The expected foulder structure is shwon below. The scene folders of InteriorNet are save for example in HD1/train.
 The Matterport_Inference Notebook is a demo Notebook to show how inference is performed with a trained model. The Matterport_Interior Notebook is a demo for training.
 
